@@ -5,7 +5,7 @@
 # Base images are pinned by digest, not tag: a tag is mutable and a rebuilt
 # upstream would silently change what goes into the binary. Refresh these with
 #   docker buildx imagetools inspect <image>:<tag> --format '{{.Manifest.Digest}}'
-FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS web
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS web
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
