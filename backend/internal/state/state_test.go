@@ -191,3 +191,55 @@ func TestSettingsRoundTripThroughDisk(t *testing.T) {
 		t.Errorf("Teams = %v", got.Teams)
 	}
 }
+
+// A temp file left behind with a wider mode, or a symlink planted in its place, must
+// never decide where the token goes or who can read it.
+func TestALeftoverTempFileCannotWidenTheSessionMode(t *testing.T) {
+	s, dir := newTestStore(t)
+	session := filepath.Join(dir, "session.json")
+	if err := os.WriteFile(session+".tmp", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(session+".tmp", 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SaveSession(Session{Mode: "oauth", Login: "octocat", Token: "ghp_secret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("session.json mode = %o, want 600", got)
+	}
+}
+
+func TestATempPathSymlinkIsNotWrittenThrough(t *testing.T) {
+	s, dir := newTestStore(t)
+	session := filepath.Join(dir, "session.json")
+	elsewhere := filepath.Join(t.TempDir(), "collected")
+	if err := os.WriteFile(elsewhere, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, session+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SaveSession(Session{Mode: "oauth", Login: "octocat", Token: "ghp_secret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if b, _ := os.ReadFile(elsewhere); len(b) != 0 {
+		t.Fatalf("the token was written through the symlink: %q", b)
+	}
+	info, err := os.Lstat(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("session.json is now a symlink")
+	}
+}

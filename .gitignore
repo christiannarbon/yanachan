@@ -40,3 +40,5 @@ node_modules/
 *.swp
 .idea/
 .vscode/
+
+dev_notes/*
