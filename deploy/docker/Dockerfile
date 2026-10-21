@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yana-chan-4k ./cmd
 # ---- runtime --------------------------------------------------------------
 # 3.24, matching the Alpine the node and golang builder images are themselves
 # built on. The old 3.21 pin was three releases behind.
-FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 RUN apk add --no-cache ca-certificates tzdata \
  && adduser -D -u 10001 -h /home/yana yana \
  && mkdir -p /data && chown yana:yana /data
