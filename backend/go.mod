@@ -5,4 +5,4 @@ module github.com/christiannarbon/yanachan-4k/backend
 // setup-go exports GOTOOLCHAIN=local so nothing silently fetches another one.
 // A separate `toolchain` line cannot do that job -- once it matches this
 // directive, `go mod tidy` deletes it as redundant.
-go 1.27.0
+go 1.27.3
