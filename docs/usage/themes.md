@@ -31,14 +31,14 @@ declares in its own `:root`, and both faces are the pair the
 [calorie meter page](https://makeine-anime.com/special/calorie_meter/) sets its
 numbers in:
 
-| Token | Where it comes from |
-| --- | --- |
-| `#070a7d` navy | the site's structure — rules, buttons, the 2px card outline |
-| `#ff7031` vermillion | Yanami's own colour, and what the page shouts with |
-| `#fff100` yellow | the kcal digit tiles |
-| `#dae9f5` pale blue | the rule between rows of the calorie table |
-| Quantico | the big numerals |
-| Noto Sans JP | everything else |
+| Token | Where it comes from                                          |
+| --- |--------------------------------------------------------------|
+| `#070a7d` navy | the site's structure — rules, buttons, the 2px card outline  |
+| `#ff7031` vermillion | Just there because it vibrant and what the page shouts with |
+| `#fff100` yellow | Yanami's main character color                                |
+| `#dae9f5` pale blue | Yanami's main character color                                |
+| Quantico | the big numerals                                             |
+| Noto Sans JP | everything else                                              |
 
 The role assignment is the part worth explaining. Navy takes `primary`, so it
 becomes `--fact` and the accent — that is what the site is built out of. The
