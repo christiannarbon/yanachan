@@ -22,8 +22,10 @@ import (
 type Server struct {
 	cfg   config.Config
 	store *state.Store
-	auth  *authService
-	ui    http.Handler
+	local *authService
+	// ra answers whose token and settings a request uses. See requestauth.go.
+	ra requestAuth
+	ui http.Handler
 
 	// allowedHosts is the lowercased Host allowlist, loopback aside. Built once
 	// at construction from the listen address, the dev origin and the operator's
@@ -32,10 +34,12 @@ type Server struct {
 }
 
 func NewServer(cfg config.Config, store *state.Store, ui http.Handler) *Server {
+	local := newAuthService(cfg, store)
 	s := &Server{
 		cfg:          cfg,
 		store:        store,
-		auth:         newAuthService(cfg, store),
+		local:        local,
+		ra:           &localAuth{svc: local, store: store},
 		ui:           ui,
 		allowedHosts: map[string]bool{},
 	}
@@ -206,11 +210,11 @@ func (s *Server) originAllowed(r *http.Request) bool {
 }
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.auth.status(r.Context()))
+	writeJSON(w, http.StatusOK, s.local.status(r.Context()))
 }
 
 func (s *Server) handleApproveGhCLI(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.auth.approveGhCLI(r.Context())
+	sess, err := s.local.approveGhCLI(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -219,7 +223,7 @@ func (s *Server) handleApproveGhCLI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleApproveEnvToken(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.auth.approveEnvToken(r.Context())
+	sess, err := s.local.approveEnvToken(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -228,7 +232,7 @@ func (s *Server) handleApproveEnvToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
-	dc, err := s.auth.startDevice(r.Context())
+	dc, err := s.local.startDevice(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -242,7 +246,7 @@ func (s *Server) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
-	res, err := s.auth.pollDevice(r.Context())
+	res, err := s.local.pollDevice(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -251,7 +255,7 @@ func (s *Server) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if err := s.auth.logout(); err != nil {
+	if err := s.local.logout(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -259,10 +263,25 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.Settings())
+	st, err := s.ra.Settings(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	got, err := st.Get(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, got)
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
+	st, err := s.ra.Settings(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
 	var in state.Settings
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid settings payload: "+err.Error())
@@ -284,7 +303,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	saved, err := s.store.SaveSettings(in)
+	saved, err := st.Save(r.Context(), in)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -293,7 +312,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
-	cl, _, err := s.auth.client()
+	cl, _, err := s.ra.Client(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -311,12 +330,21 @@ func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
-	cl, sess, err := s.auth.client()
+	cl, v, err := s.ra.Client(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	settings := s.store.Settings()
+	st, err := s.ra.Settings(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	settings, err := st.Get(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 
 	limit := settings.Limit
 	if v := intParam(r, "limit"); v > 0 && v <= 100 {
@@ -332,8 +360,8 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := board.Request{
-		Login:      sess.Login,
-		AuthMode:   sess.Mode,
+		Login:      v.Login,
+		AuthMode:   v.Mode,
 		Teams:      settings.Teams,
 		Orgs:       settings.Orgs,
 		Limit:      limit,
@@ -354,7 +382,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 
 // handleStats answers the landing dashboard: the viewer's own week.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	cl, sess, err := s.auth.client()
+	cl, v, err := s.ra.Client(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -365,7 +393,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := stats.Build(r.Context(), cl, stats.Request{
-		Login: sess.Login,
+		Login: v.Login,
 		Days:  days,
 		Now:   time.Now(),
 	})
