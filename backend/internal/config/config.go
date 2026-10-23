@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Auth modes (DR-12). The mode is always explicit, never inferred.
+// Auth modes. The mode is always explicit, never inferred.
 const (
 	AuthLocal  = "local"
 	AuthServer = "server"
@@ -65,7 +65,7 @@ type Config struct {
 	// SessionIdle and SessionMax bound a server-mode session's life.
 	SessionIdle time.Duration
 	SessionMax  time.Duration
-	// TokenMaxAge is the shared token rotation default (DR-20); the two
+	// TokenMaxAge is the shared token rotation default; the two
 	// overrides replace it per app kind. Read through MaxTokenAge.
 	TokenMaxAge          time.Duration
 	OAuthAppTokenMaxAge  time.Duration
@@ -114,7 +114,7 @@ func Load() Config {
 	c.RedisCAFile = env("GHDASH_REDIS_CA_FILE", "")
 	c.RedisPrefix = env("GHDASH_REDIS_PREFIX", DefaultRedisPrefix)
 	if c.AuthMode == AuthServer {
-		// No gh in the image, and server mode writes nothing to disk (DR-14).
+		// No gh in the image, and server mode writes nothing to disk.
 		c.AllowGhCLI = false
 		c.StateDir = ""
 	}
@@ -153,7 +153,7 @@ func (c *Config) parseDuration(key string, fallback time.Duration) time.Duration
 	return d
 }
 
-// Secure reports whether the public URL is https (DR-17).
+// Secure reports whether the public URL is https.
 func (c Config) Secure() bool {
 	u, err := url.Parse(c.PublicURL)
 	return err == nil && u.Scheme == "https"
@@ -169,7 +169,7 @@ func (c Config) PublicHost() string {
 }
 
 // MaxTokenAge picks the GitHub App age for sessions with a refresh token and
-// the OAuth App age for those without (DR-20).
+// the OAuth App age for those without.
 func (c Config) MaxTokenAge(refreshable bool) time.Duration {
 	if refreshable {
 		return c.GitHubAppTokenMaxAge
