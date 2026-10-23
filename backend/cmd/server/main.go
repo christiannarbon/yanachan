@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +22,21 @@ import (
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		for _, line := range strings.Split(err.Error(), "\n") {
+			log.Printf("config: %s", line)
+		}
+		os.Exit(1)
+	}
+	log.Printf("auth mode: %s", cfg.AuthMode)
+	if cfg.AuthMode == config.AuthServer && !cfg.Secure() && !isLoopback(cfg.PublicHost()) {
+		log.Printf("warning: GHDASH_PUBLIC_URL is plain http on a non-loopback host; session cookies will cross the network unencrypted")
+	}
+	if cfg.AuthMode == config.AuthServer {
+		// P2-11 replaces this with the server-mode wiring.
+		log.Printf("config: server mode is not wired up yet")
+		os.Exit(1)
+	}
 
 	store, err := state.New(cfg.SettingsPath(), cfg.SessionPath(), state.DefaultSettings(cfg.DefaultLimit))
 	if err != nil {
@@ -56,4 +73,12 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
