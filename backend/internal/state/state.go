@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/christiannarbon/yanachan-4k/backend/internal/atomicfile"
 )
 
 // MaxWindowHours bounds a fixed activity window at 30 days. Beyond roughly
@@ -172,7 +174,7 @@ func (s *Store) SaveSettings(in Settings) (Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settings = normalize(in, s.settings.Limit)
-	if err := writeJSON(s.settingsPath, s.settings); err != nil {
+	if err := atomicfile.WriteJSON(s.settingsPath, s.settings); err != nil {
 		return s.settings, err
 	}
 	return s.settings, nil
@@ -192,7 +194,7 @@ func (s *Store) SaveSession(sess Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.session = &sess
-	return writeJSON(s.sessionPath, sess)
+	return atomicfile.WriteJSON(s.sessionPath, sess)
 }
 
 func (s *Store) ClearSession() error {
@@ -203,31 +205,4 @@ func (s *Store) ClearSession() error {
 		return err
 	}
 	return nil
-}
-
-func writeJSON(path string, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	// A fresh, randomly named file opened O_EXCL at 0600: a leftover temp file or a
-	// symlink in its place is never written through.
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(append(b, '\n')); err != nil {
-		tmp.Close()
-		return err
-	}
-	// Without it a crash just after the rename can leave an empty file.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }
