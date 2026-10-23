@@ -2,10 +2,29 @@
 package config
 
 import (
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+)
+
+// Auth modes (DR-12). The mode is always explicit, never inferred.
+const (
+	AuthLocal  = "local"
+	AuthServer = "server"
+)
+
+const (
+	DefaultSessionIdle = 168 * time.Hour
+	DefaultSessionMax  = 720 * time.Hour
+	DefaultTokenMaxAge = 8 * time.Hour
+	MinTokenMaxAge     = 15 * time.Minute
+	DefaultRedisPrefix = "yana:"
 )
 
 type Config struct {
@@ -30,6 +49,37 @@ type Config struct {
 	AllowedHosts []string
 	// DefaultLimit is the per-query PR cap.
 	DefaultLimit int
+
+	// AuthMode is AuthLocal (default) or AuthServer.
+	AuthMode string
+	// ClientSecret is the GitHub App / OAuth App client secret. Server mode only.
+	ClientSecret string
+	// PublicURL is the origin users reach the app at. Server mode only.
+	PublicURL string
+	// SessionKeys seal tokens at rest. The first seals, all open.
+	SessionKeys [][]byte
+	// AllowedOrgs, AllowedUsers and AllowAnyUser are the server-mode access policy.
+	AllowedOrgs  []string
+	AllowedUsers []string
+	AllowAnyUser bool
+	// SessionIdle and SessionMax bound a server-mode session's life.
+	SessionIdle time.Duration
+	SessionMax  time.Duration
+	// TokenMaxAge is the shared token rotation default (DR-20); the two
+	// overrides replace it per app kind. Read through MaxTokenAge.
+	TokenMaxAge          time.Duration
+	OAuthAppTokenMaxAge  time.Duration
+	GitHubAppTokenMaxAge time.Duration
+	// RESTEndpoint is the GitHub REST base, used for token revocation.
+	RESTEndpoint string
+	// RedisURL is redis:// or rediss://, without a password.
+	RedisURL      string
+	RedisPassword string
+	RedisCAFile   string
+	RedisPrefix   string
+
+	// problems are parse failures found by Load, reported by Validate.
+	problems []string
 }
 
 func Load() Config {
@@ -45,7 +95,163 @@ func Load() Config {
 		AllowedHosts:    envList("GHDASH_ALLOWED_HOSTS"),
 		DefaultLimit:    envInt("GHDASH_LIMIT", 25),
 	}
+	c.AuthMode = strings.ToLower(env("GHDASH_AUTH_MODE", AuthLocal))
+	c.ClientSecret = env("GITHUB_CLIENT_SECRET", "")
+	c.PublicURL = strings.TrimRight(env("GHDASH_PUBLIC_URL", ""), "/")
+	c.AllowedOrgs = envList("GHDASH_ALLOWED_ORGS")
+	c.AllowedUsers = envList("GHDASH_ALLOWED_USERS")
+	c.AllowAnyUser = envBool("GHDASH_ALLOW_ANY_USER", false)
+	c.RESTEndpoint = env("GHDASH_REST_ENDPOINT", "https://api.github.com")
+	c.SessionKeys = c.parseKeys(os.Getenv("GHDASH_SESSION_KEYS"))
+	c.SessionIdle = c.parseDuration("GHDASH_SESSION_IDLE", DefaultSessionIdle)
+	c.SessionMax = c.parseDuration("GHDASH_SESSION_MAX", DefaultSessionMax)
+	c.TokenMaxAge = c.parseDuration("GHDASH_TOKEN_MAX_AGE", DefaultTokenMaxAge)
+	c.OAuthAppTokenMaxAge = c.parseDuration("GHDASH_OAUTH_APP_TOKEN_MAX_AGE", c.TokenMaxAge)
+	c.GitHubAppTokenMaxAge = c.parseDuration("GHDASH_GITHUB_APP_TOKEN_MAX_AGE", c.TokenMaxAge)
+	c.RedisURL = env("GHDASH_REDIS_URL", "")
+	// Not env: a password may have leading or trailing spaces.
+	c.RedisPassword = os.Getenv("GHDASH_REDIS_PASSWORD")
+	c.RedisCAFile = env("GHDASH_REDIS_CA_FILE", "")
+	c.RedisPrefix = env("GHDASH_REDIS_PREFIX", DefaultRedisPrefix)
+	if c.AuthMode == AuthServer {
+		// No gh in the image, and server mode writes nothing to disk (DR-14).
+		c.AllowGhCLI = false
+		c.StateDir = ""
+	}
 	return c
+}
+
+// parseKeys reads comma-separated standard-base64 keys. A malformed entry is
+// recorded by its position, never by its value.
+func (c *Config) parseKeys(raw string) [][]byte {
+	var keys [][]byte
+	for i, part := range strings.Split(raw, ",") {
+		v := strings.TrimSpace(part)
+		if v == "" {
+			continue
+		}
+		k, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			c.problems = append(c.problems, fmt.Sprintf("GHDASH_SESSION_KEYS entry %d is not valid base64", i+1))
+			continue
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func (c *Config) parseDuration(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		c.problems = append(c.problems, fmt.Sprintf("%s: %q is not a duration such as 168h", key, v))
+		return fallback
+	}
+	return d
+}
+
+// Secure reports whether the public URL is https (DR-17).
+func (c Config) Secure() bool {
+	u, err := url.Parse(c.PublicURL)
+	return err == nil && u.Scheme == "https"
+}
+
+// PublicHost is the lowercased hostname of PublicURL, without port, or "".
+func (c Config) PublicHost() string {
+	u, err := url.Parse(c.PublicURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// MaxTokenAge picks the GitHub App age for sessions with a refresh token and
+// the OAuth App age for those without (DR-20).
+func (c Config) MaxTokenAge(refreshable bool) time.Duration {
+	if refreshable {
+		return c.GitHubAppTokenMaxAge
+	}
+	return c.OAuthAppTokenMaxAge
+}
+
+// Validate reports every configuration problem at once, never a secret's value.
+func (c Config) Validate() error {
+	switch c.AuthMode {
+	case AuthLocal:
+		// Local mode never reads the server-mode variables, so a stray typo in
+		// one of them must not stop a laptop from starting.
+		return nil
+	case AuthServer:
+	default:
+		return errors.New(`GHDASH_AUTH_MODE must be "local" or "server"`)
+	}
+
+	problems := append([]string(nil), c.problems...)
+	add := func(msg string) { problems = append(problems, msg) }
+
+	if c.ClientID == "" {
+		add("GITHUB_CLIENT_ID is required in server mode")
+	}
+	if c.ClientSecret == "" {
+		add("GITHUB_CLIENT_SECRET is required in server mode")
+	}
+	if c.PublicURL == "" {
+		add("GHDASH_PUBLIC_URL is required in server mode")
+	} else if u, err := url.Parse(c.PublicURL); err != nil ||
+		(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+		u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		add("GHDASH_PUBLIC_URL must be an origin such as https://yana.example.com, with no path")
+	}
+	if len(c.SessionKeys) == 0 {
+		add("GHDASH_SESSION_KEYS is required in server mode (generate one with: openssl rand -base64 32)")
+	}
+	for i, k := range c.SessionKeys {
+		if len(k) != 32 {
+			add(fmt.Sprintf("GHDASH_SESSION_KEYS entry %d is %d bytes, want 32", i+1, len(k)))
+		}
+	}
+	if len(c.AllowedOrgs) == 0 && len(c.AllowedUsers) == 0 && !c.AllowAnyUser {
+		add("server mode needs an access policy: set GHDASH_ALLOWED_ORGS, GHDASH_ALLOWED_USERS, or GHDASH_ALLOW_ANY_USER=true")
+	}
+	if c.EnvToken != "" {
+		add("GH_TOKEN, GITHUB_TOKEN and GHDASH_GITHUB_TOKEN must be unset in server mode: every user signs in with their own account")
+	}
+	if c.SessionMax < c.SessionIdle {
+		add("GHDASH_SESSION_MAX must not be shorter than GHDASH_SESSION_IDLE")
+	}
+	outOfRange := func(d time.Duration) bool { return d < MinTokenMaxAge || d > c.SessionMax }
+	if outOfRange(c.TokenMaxAge) {
+		add("GHDASH_TOKEN_MAX_AGE must be between 15m and GHDASH_SESSION_MAX")
+	}
+	// Only when set, so an out-of-range shared value is reported once.
+	if env("GHDASH_OAUTH_APP_TOKEN_MAX_AGE", "") != "" && outOfRange(c.OAuthAppTokenMaxAge) {
+		add("GHDASH_OAUTH_APP_TOKEN_MAX_AGE must be between 15m and GHDASH_SESSION_MAX")
+	}
+	if env("GHDASH_GITHUB_APP_TOKEN_MAX_AGE", "") != "" && outOfRange(c.GitHubAppTokenMaxAge) {
+		add("GHDASH_GITHUB_APP_TOKEN_MAX_AGE must be between 15m and GHDASH_SESSION_MAX")
+	}
+	if c.RedisURL == "" {
+		add("GHDASH_REDIS_URL is required in server mode (redis://host:6379/0 or rediss://host:6378/0)")
+	} else if u, err := url.Parse(c.RedisURL); err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Host == "" {
+		add("GHDASH_REDIS_URL must be redis://host:port[/db] or rediss://…")
+	} else {
+		// Never echo the URL here: it carries the password.
+		if _, ok := u.User.Password(); ok {
+			add("GHDASH_REDIS_URL must not contain a password; put it in GHDASH_REDIS_PASSWORD")
+		}
+		if c.RedisCAFile != "" && u.Scheme == "redis" {
+			add("GHDASH_REDIS_CA_FILE needs a rediss:// URL")
+		}
+	}
+
+	errs := make([]error, len(problems))
+	for i, p := range problems {
+		errs[i] = errors.New(p)
+	}
+	return errors.Join(errs...)
 }
 
 func (c Config) SettingsPath() string { return filepath.Join(c.StateDir, "settings.json") }
