@@ -33,7 +33,6 @@ func main() {
 		log.Printf("warning: GHDASH_PUBLIC_URL is plain http on a non-loopback host; session cookies will cross the network unencrypted")
 	}
 	if cfg.AuthMode == config.AuthServer {
-		// P2-11 replaces this with the server-mode wiring.
 		log.Printf("config: server mode is not wired up yet")
 		os.Exit(1)
 	}
