@@ -1,10 +1,16 @@
 # Dependency updates.
 #
-# The Go module has no third-party dependencies, so there is no gomod entry
-# here: govulncheck against the standard library is the check that matters
-# there, and the toolchain is pinned in backend/go.mod by hand.
+# The Go toolchain is pinned in backend/go.mod by hand; the gomod entry only
+# moves go-redis and what it pulls in.
 version: 2
 updates:
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+
   # The workflow pins actions to major versions; this is what moves them.
   - package-ecosystem: github-actions
     directory: /
