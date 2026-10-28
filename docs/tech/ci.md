@@ -14,8 +14,9 @@ alone so the record of what passed stays intact.
 | Job | What it proves |
 | --- | --- |
 | **Backend** | `gofmt` clean, `go vet` clean, `go test -race` green |
+| **Redis/Valkey** | the `kv` conformance suite passes against a real Valkey |
 | **Frontend** | the lockfile installs, `vue-tsc` passes, the bundle builds |
-| **Vulnerabilities** | `govulncheck` finds no reachable standard library vulnerability |
+| **Vulnerabilities** | `govulncheck` finds no reachable vulnerability in the standard library or go-redis |
 | **Build and smoke test** | `make build` produces a binary that serves the embedded app correctly |
 | **Kubernetes manifests** | both overlays render, schema-check, and keep their security posture |
 | **Container image** | the multi-stage build works and the container behaves |
@@ -29,16 +30,24 @@ They run in parallel. Nothing depends on anything else.
 the process, guarded by an `RWMutex`, and a lost lock there is exactly the bug a
 serial test run passes.
 
+**Redis/Valkey.** The backend job runs the `kv` conformance suite against the
+in-memory store; this one runs the same suite against a Valkey service
+container, pinned by digest to the same image as `make valkey-up`. Without
+`GHDASH_TEST_REDIS_URL` those tests skip, and a skip is green, so a second step
+fails the job if `TestRedisConformance` did not actually run. The service has no
+password: it lives for one job on an ephemeral runner. The password path is
+covered locally by `make test-redis`.
+
 **Frontend.** `npm ci` rather than `npm install`, so a `package.json` that has
 drifted from the lockfile fails here instead of in the image build. The type
 check runs as its own step even though `npm run build` type-checks first,
 because it is where a locale key added to `en.ts` and not `ja.ts` fails, and
 that deserves to report as a type error. See [i18n](low-level-design/i18n.md).
 
-**Vulnerabilities.** The module has no third-party dependencies, so this is a
-standard library scan and the toolchain pin in `go.mod` is the whole of what it
-scans. Not a small surface here: the one place this app talks to the network
-holding a GitHub token goes through `crypto/tls`, `crypto/x509` and `net/http`.
+**Vulnerabilities.** This scans the standard library at the toolchain pinned
+in `go.mod`, and go-redis, the one third-party module, which holds the session
+store's connection. The standard library side is not a small surface either: the
+GitHub token travels through `crypto/tls`, `crypto/x509` and `net/http`.
 `govulncheck` reports only what the code actually reaches, which is what makes
 it worth gating on.
 
@@ -84,6 +93,7 @@ make docs-check    # just the documentation links
 make build         # what the build job builds
 make k8s-validate  # renders and schema-checks both overlays
 make docker-build  # the image
+make valkey-up && make test-redis && make valkey-down   # the Redis/Valkey job
 ```
 
 `make check` is the closest single command to what CI runs. It does not include
@@ -105,11 +115,12 @@ it meant last week.
 | govulncheck | `v1.1.4` | workflow |
 | kustomize | `v5.4.3` | workflow |
 | kubeconform | `v0.6.7` | workflow, `-kubernetes-version 1.33.0` |
+| Valkey | `9.1.3-alpine`, by digest | workflow service and `VALKEY_IMAGE` in the Makefile |
 
 [Dependabot](../../.github/dependabot.yml) moves the action versions weekly, the
 Dockerfile's base image digests weekly, and the frontend packages monthly as one
-grouped pull request. There is no `gomod` entry: the module has no third-party
-dependencies.
+grouped pull request. The `gomod` entry moves go-redis weekly; the Go
+toolchain itself is still moved by hand.
 
 ## Artefacts
 
@@ -124,7 +135,7 @@ run yourself:
 
 | Job | Start at |
 | --- | --- |
-| Backend, Frontend, Build | [build and tests](troubleshooting/build-and-tests.md) |
+| Backend, Redis/Valkey, Frontend, Build | [build and tests](troubleshooting/build-and-tests.md) |
 | Kubernetes manifests | [Kubernetes](troubleshooting/kubernetes.md) |
 | Container image | [Docker](../usage/docker.md) |
 | Documentation | the checker names the file and the link |
