@@ -323,6 +323,29 @@ tunnel: k8s-tunnel ## Alias for k8s-tunnel
 .PHONY: tunnel-down
 tunnel-down: k8s-untunnel ## Alias for k8s-untunnel
 
+# ----------------------------------------------------------------- valkey ---
+
+# A throwaway Valkey on loopback for server mode and the Redis tests. The
+# password is a placeholder for a container nobody else can reach, not a
+# credential. Persistence is off so it never writes a token to disk.
+VALKEY_IMAGE    ?= valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+VALKEY_PORT     ?= 16379
+VALKEY_PASSWORD ?= yana-dev-only
+
+.PHONY: valkey-up
+valkey-up: ## Start a throwaway Valkey on 127.0.0.1 for server mode and the Redis tests
+	docker run -d --rm --name yana-valkey -p 127.0.0.1:$(VALKEY_PORT):6379 \
+		$(VALKEY_IMAGE) valkey-server --requirepass $(VALKEY_PASSWORD) --save "" --appendonly no
+
+.PHONY: valkey-down
+valkey-down: ## Stop the throwaway Valkey
+	-docker stop yana-valkey
+
+.PHONY: test-redis
+test-redis: ## Run the kv tests against the throwaway Valkey
+	cd $(BACKEND) && GHDASH_TEST_REDIS_URL=redis://127.0.0.1:$(VALKEY_PORT)/0 \
+		GHDASH_TEST_REDIS_PASSWORD=$(VALKEY_PASSWORD) go test -race -count=1 -v ./internal/kv/...
+
 # ------------------------------------------------------------------- down ---
 
 define stop_pid
@@ -342,10 +365,11 @@ define stop_pid
 endef
 
 .PHONY: down
-down: ## Stop everything running locally (dev servers, compose, tunnel)
+down: ## Stop everything running locally (dev servers, compose, tunnel, valkey)
 	@$(call stop_pid,web)
 	@$(call stop_pid,api)
 	@$(MAKE) --no-print-directory k8s-untunnel
+	@if command -v docker >/dev/null 2>&1; then docker stop yana-valkey >/dev/null 2>&1 || true; fi
 	@if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then \
 		cd $(ROOT)/deploy/docker && GHDASH_IMAGE=$(IMAGE) docker compose down --remove-orphans 2>/dev/null || true; \
 	fi
