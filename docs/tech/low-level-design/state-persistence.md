@@ -84,3 +84,46 @@ set (`/data`).
 `ClearSession` removes `session.json` and drops the in-memory copy.
 `settings.json` is untouched — the teams you follow are not a secret and are not
 worth making you re-enter.
+
+## Server mode: sessions
+
+`backend/internal/session/session.go`
+
+In server mode there is no `session.json`. Each session is one key in
+Redis/Valkey, reached through `kv.Store`, and nothing is written to disk.
+
+| Key | Value | TTL |
+| --- | --- | --- |
+| `session:<hex sha256(session id)>` | JSON record, tokens sealed | effective expiry + `RevokeGrace` (1h) |
+| `session-expiry` (sorted set) | member = the hex hash, score = effective expiry in unix seconds | none |
+
+Both sit under `GHDASH_REDIS_PREFIX`.
+
+**The cookie carries the ID; Redis never does.** The key is named by the
+SHA-256 of the ID, so someone reading Redis — a dump, a replica, `MONITOR` —
+cannot turn a key back into a cookie. The ID is 32 random bytes,
+base64url-encoded to 43 characters, and anything of another shape is rejected
+before it is hashed, so a garbage cookie costs no round-trip.
+
+**The tokens are sealed.** The access and refresh tokens are sealed with the
+[`GHDASH_SESSION_KEYS`](configuration-reference.md) keyring, AES-256-GCM, using
+the hex hash as the additional data, so a sealed token copied into another session's value does not open. A
+value that does not open — its key was dropped from the ring, or it was
+tampered with — is deleted and treated as not found: the user signs in again.
+
+**Effective expiry** is `min(LastSeenAt + idle, CreatedAt + max)`. Past it, a
+session is not found, whatever the TTL says. The key is not deleted at that
+point: the reaper still needs the token to revoke it at GitHub. Updating a
+session always keeps the stored `CreatedAt`, so nothing can carry it past the
+maximum age.
+
+**The TTL** on every write is the effective expiry plus an hour of grace. It is
+the backstop that removes the key even if the reaper never runs. A write whose
+TTL would already be zero deletes the session instead.
+
+**The `session-expiry` index** is updated on every write and cleared on every
+delete. The reaper reads it to find sessions past their effective expiry,
+oldest first, revokes their tokens and deletes them by hash.
+
+`LastSeenAt` is written back at most once a minute per session, so a board
+refreshing every few seconds is not a Redis write every few seconds.
