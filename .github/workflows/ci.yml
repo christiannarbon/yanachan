@@ -34,10 +34,7 @@ jobs:
           # Docker build and this run agree. Reading it from there means the
           # pin has one home.
           go-version-file: backend/go.mod
-          # The module has no third-party dependencies, so there is no module
-          # cache worth restoring -- and setup-go's cache wants a go.sum that
-          # this project does not have.
-          cache: false
+          cache-dependency-path: backend/go.sum
 
       - name: gofmt
         run: |
@@ -57,6 +54,46 @@ jobs:
       # the bug that passes a serial test run.
       - name: go test
         run: go test -race -count=1 ./...
+
+  # The memory store passes the conformance suite in the backend job; this is
+  # the same suite against a real Valkey. The service has no password: it
+  # lives for one job on an ephemeral runner and is reachable from nothing
+  # else. The password path is covered locally by make test-redis.
+  redis:
+    name: Redis/Valkey
+    runs-on: ubuntu-latest
+    services:
+      valkey:
+        # The same pin as VALKEY_IMAGE in the Makefile.
+        image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: kv tests against Valkey
+        env:
+          GHDASH_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+        run: go test -race -count=1 -v ./internal/kv/... | tee "$RUNNER_TEMP/kv.log"
+        shell: bash -o pipefail {0}
+
+      # A missing env var turns these tests into skips, and a skip is green.
+      - name: Make sure the conformance suite ran
+        run: |
+          if grep -q -- '--- SKIP: TestRedisConformance' "$RUNNER_TEMP/kv.log"; then
+            echo "::error::TestRedisConformance was skipped"
+            exit 1
+          fi
+          grep -q -- '--- PASS: TestRedisConformance ' "$RUNNER_TEMP/kv.log"
 
   frontend:
     name: Frontend
@@ -101,14 +138,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: backend/go.mod
-          cache: false
+          cache-dependency-path: backend/go.sum
 
-      # The module has no third-party dependencies, so this is a standard
-      # library scan and the toolchain pin in go.mod is the whole of what it
-      # is scanning. That is not a small surface here: the one place this app
-      # talks to the network holding a GitHub token goes through crypto/tls,
-      # crypto/x509 and net/http, and govulncheck reports only the
-      # vulnerabilities this code actually reaches.
+      # This scans the standard library at the toolchain pinned in go.mod and
+      # go-redis, the one third-party module, which holds the session store's
+      # connection. The standard library side is not a small surface either:
+      # the GitHub token travels through crypto/tls, crypto/x509 and net/http.
+      # govulncheck reports only the vulnerabilities this code actually reaches.
       #
       # Pinned, so a green tick means the same check it meant last week. The
       # pin still has to keep pace with the `go` directive, though: govulncheck
@@ -126,7 +162,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: backend/go.mod
-          cache: false
+          cache-dependency-path: backend/go.sum
 
       - uses: actions/setup-node@v7
         with:
