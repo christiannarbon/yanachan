@@ -115,7 +115,7 @@ jobs:
       # parses the source it scans, so a version older than the toolchain can
       # meet syntax it does not know and panic rather than report.
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   build:
     name: Build and smoke test
