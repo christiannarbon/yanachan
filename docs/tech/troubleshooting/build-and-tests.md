@@ -62,6 +62,32 @@ say why in the message. If you did not, you have found a regression.
 
 `TestAuthStatusNeverLeaksToken` is the one never to "fix" by adjusting the test.
 
+## The Redis tests skip
+
+`TestRedisConformance` and `TestRedisPrefix` need a real server and skip when
+`GHDASH_TEST_REDIS_URL` is not set, so a plain `go test ./...` reports them as
+`SKIP`. Start the throwaway Valkey and point the tests at it:
+
+```sh
+make valkey-up
+make test-redis
+make valkey-down
+```
+
+The Valkey listens on `127.0.0.1` only, with persistence off. `make down` stops
+it too.
+
+## `make valkey-up` says port 16379 is in use
+
+Something else, often a Valkey left over from an earlier run, is on the port.
+`make valkey-down` stops the old one; otherwise pick another port and pass it to
+both targets:
+
+```sh
+VALKEY_PORT=16380 make valkey-up
+VALKEY_PORT=16380 make test-redis
+```
+
 ## Tests pass locally, fail in Docker
 
 The Docker build pins its base images by **digest**, not tag, so it may be on a
