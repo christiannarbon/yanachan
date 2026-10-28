@@ -5,7 +5,7 @@
 # Base images are pinned by digest, not tag: a tag is mutable and a rebuilt
 # upstream would silently change what goes into the binary. Refresh these with
 #   docker buildx imagetools inspect <image>:<tag> --format '{{.Manifest.Digest}}'
-FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS web
+FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS web
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -13,7 +13,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- backend --------------------------------------------------------------
-FROM golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS api
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS api
 WORKDIR /src/backend
 COPY backend/go.mod ./
 RUN go mod download
@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yana-chan-4k ./cmd
 # ---- runtime --------------------------------------------------------------
 # 3.24, matching the Alpine the node and golang builder images are themselves
 # built on. The old 3.21 pin was three releases behind.
-FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 RUN apk add --no-cache ca-certificates tzdata \
  && adduser -D -u 10001 -h /home/yana yana \
  && mkdir -p /data && chown yana:yana /data
