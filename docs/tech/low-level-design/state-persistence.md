@@ -127,3 +127,37 @@ oldest first, revokes their tokens and deletes them by hash.
 
 `LastSeenAt` is written back at most once a minute per session, so a board
 refreshing every few seconds is not a Redis write every few seconds.
+
+## Server mode: settings
+
+`backend/internal/state/users.go`
+
+In server mode each person follows their own teams and orgs. There is no
+`settings.json`: each user's settings are one key in Redis/Valkey, under
+`GHDASH_REDIS_PREFIX`.
+
+| Key | Value | TTL |
+| --- | --- | --- |
+| `user:<github user id>:settings` | JSON `state.Settings` | none |
+
+**The numeric user ID, not the login.** A login can be renamed and later
+registered by someone else, who would then inherit the old owner's settings.
+The ID never changes hands.
+
+**No TTL and not sealed.** Settings hold no secret — a list of teams and orgs
+and a few view flags — so there is nothing to seal, and nothing to expire.
+Reading a user with no key returns the defaults and writes nothing.
+
+The same [normalization](#normalization) as local mode runs on every read and
+every save.
+
+**A corrupt value is treated as no settings.** It is logged with the user ID,
+the defaults are returned, and the next save replaces it. One user's broken
+value must not lock them out.
+
+**A Redis error is surfaced, not hidden.** If the store cannot be reached, the
+read fails and the API answers with a 5xx. Quietly showing the defaults
+instead would invite the user to save them over their real settings.
+
+There is no in-memory cache: with several replicas, one would serve stale
+settings after another replica saved.
