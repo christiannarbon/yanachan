@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -28,32 +29,47 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	log.Printf("auth mode: %s", cfg.AuthMode)
-	if cfg.AuthMode == config.AuthServer && !cfg.Secure() && !isLoopback(cfg.PublicHost()) {
-		log.Printf("warning: GHDASH_PUBLIC_URL is plain http on a non-loopback host; session cookies will cross the network unencrypted")
-	}
 	if cfg.AuthMode == config.AuthServer {
-		log.Printf("config: server mode is not wired up yet")
-		os.Exit(1)
+		log.Printf("auth mode: server (public URL %s)", cfg.PublicURL)
+		log.Printf("redis: %s (key prefix %q)", redisHost(cfg.RedisURL), cfg.RedisPrefix)
+		if !cfg.Secure() && !isLoopback(cfg.PublicHost()) {
+			log.Printf("warning: GHDASH_PUBLIC_URL is plain http on a non-loopback host; session cookies will cross the network unencrypted")
+		}
+	} else {
+		log.Printf("auth mode: local")
 	}
 
-	store, err := state.New(cfg.SettingsPath(), cfg.SessionPath(), state.DefaultSettings(cfg.DefaultLimit))
-	if err != nil {
-		log.Fatalf("state: %v", err)
+	var apiSrv *api.Server
+	var err error
+	switch cfg.AuthMode {
+	case config.AuthServer:
+		apiSrv, err = api.NewServerMode(context.Background(), cfg, webui.Handler())
+	default:
+		store, serr := state.New(cfg.SettingsPath(), cfg.SessionPath(), state.DefaultSettings(cfg.DefaultLimit))
+		if serr != nil {
+			log.Fatalf("state: %v", serr)
+		}
+		apiSrv = api.NewServer(cfg, store, webui.Handler())
 	}
+	if err != nil {
+		log.Fatalf("server: %v", err)
+	}
+	defer apiSrv.Close()
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, store, webui.Handler()).Handler(),
+		Handler:           apiSrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      90 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
 	log.Printf("Yana-chan 4K listening on http://%s", cfg.Addr)
-	log.Printf("state directory: %s", cfg.StateDir)
-	if cfg.ClientID == "" {
-		log.Printf("GITHUB_CLIENT_ID is unset: OAuth device sign-in is disabled")
+	if cfg.AuthMode != config.AuthServer {
+		log.Printf("state directory: %s", cfg.StateDir)
+		if cfg.ClientID == "" {
+			log.Printf("GITHUB_CLIENT_ID is unset: OAuth device sign-in is disabled")
+		}
 	}
 
 	go func() {
@@ -72,6 +88,15 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// redisHost is the host:port of a redis URL, without any username.
+func redisHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(unparseable url)"
+	}
+	return u.Host
 }
 
 func isLoopback(host string) bool {
