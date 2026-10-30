@@ -16,6 +16,7 @@ import (
 
 	"github.com/christiannarbon/yanachan-4k/backend/internal/board"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/config"
+	"github.com/christiannarbon/yanachan-4k/backend/internal/github"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/kv"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/seal"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/session"
@@ -85,6 +86,7 @@ func newServerModeWith(cfg config.Config, store kv.Store, ui http.Handler, now f
 	s := newServerBase(cfg, ui)
 	s.kv = store
 	s.server = newServerAuth(cfg, sessions, users, ring)
+	s.server.kv = store
 	s.server.now = now
 	s.ra = s.server
 	return s, nil
@@ -412,11 +414,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
 	cl, _, err := s.ra.Client(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		writeAuthError(w, err)
 		return
 	}
 	m, err := cl.Memberships(r.Context())
 	if err != nil && len(m.Orgs) == 0 && len(m.Teams) == 0 {
+		if s.tokenRejected(w, r, err) {
+			return
+		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -430,7 +435,7 @@ func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 	cl, v, err := s.ra.Client(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		writeAuthError(w, err)
 		return
 	}
 	st, err := s.ra.Settings(r)
@@ -468,6 +473,9 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := board.Build(r.Context(), cl, req)
 	if err != nil {
+		if s.tokenRejected(w, r, err) {
+			return
+		}
 		status := http.StatusBadGateway
 		if errors.Is(err, errNoSession) {
 			status = http.StatusUnauthorized
@@ -482,7 +490,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	cl, v, err := s.ra.Client(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		writeAuthError(w, err)
 		return
 	}
 	days := stats.DefaultDays
@@ -496,6 +504,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		Now:   time.Now(),
 	})
 	if err != nil {
+		if s.tokenRejected(w, r, err) {
+			return
+		}
 		status := http.StatusBadGateway
 		if errors.Is(err, errNoSession) {
 			status = http.StatusUnauthorized
@@ -529,4 +540,33 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeAuthError answers a requestAuth failure. errReauth carries "reauth": true so the
+// frontend re-authorises instead of showing the sign-in screen.
+func writeAuthError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errNoSession):
+		writeError(w, http.StatusUnauthorized, err.Error())
+	case errors.Is(err, errReauth):
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "reauth": true})
+	case errors.Is(err, errUpstream):
+		writeError(w, http.StatusBadGateway, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+// tokenRejected handles GitHub refusing a server-mode session's token: the user
+// revoked the app, an org owner removed it, or GitHub dropped it over its
+// per-user token cap. The session ends and the answer is 401, not 502.
+// Local mode keeps its own handling.
+func (s *Server) tokenRejected(w http.ResponseWriter, r *http.Request, err error) bool {
+	if s.server == nil || !errors.Is(err, github.ErrUnauthorized) {
+		return false
+	}
+	s.server.endSession(r, "token rejected by GitHub")
+	s.server.clearCookie(w, sessionCookieBase)
+	writeError(w, http.StatusUnauthorized, errNoSession.Error())
+	return true
 }
