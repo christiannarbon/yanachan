@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/christiannarbon/yanachan-4k/backend/internal/access"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/config"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/ghauth"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/ghcli"
@@ -28,8 +30,9 @@ type serverAuth struct {
 	users    *state.UserSettings
 	web      *ghauth.WebClient
 	ring     *seal.Keyring
+	policy   access.Policy
 	// allow decides whether a signed-in GitHub user may use this deployment.
-	// Everyone is allowed until the access policy replaces it.
+	// It is policy.Check unless a test swaps it out.
 	allow func(ctx context.Context, cl *github.Client, login string) error
 	now   func() time.Time
 }
@@ -41,16 +44,20 @@ const (
 )
 
 func newServerAuth(cfg config.Config, sessions *session.Store, users *state.UserSettings, ring *seal.Keyring) *serverAuth {
-	return &serverAuth{
+	a := &serverAuth{
 		cfg:      cfg,
 		sessions: sessions,
 		users:    users,
 		web: ghauth.NewWebClient(cfg.ClientID, cfg.ClientSecret, cfg.WebEndpoint,
 			strings.TrimRight(cfg.PublicURL, "/")+"/api/auth/callback"),
-		ring:  ring,
-		allow: func(context.Context, *github.Client, string) error { return nil },
-		now:   time.Now,
+		ring:   ring,
+		policy: access.PolicyFromConfig(cfg),
+		now:    time.Now,
 	}
+	a.allow = func(ctx context.Context, cl *github.Client, login string) error {
+		return a.policy.Check(ctx, cl, login)
+	}
+	return a
 }
 
 // cookieName adds the __Host- prefix when cookies are Secure. The prefix makes
@@ -165,12 +172,20 @@ func (a *serverAuth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	login, id, err := cl.ViewerIdentity(ctx)
 	if err != nil {
 		log.Printf("sign-in failed: viewer identity: %v", err)
+		a.revokeQuietly(tok.AccessToken, "unknown user")
 		authErrorRedirect(w, r, "server")
 		return
 	}
 	if err := a.allow(ctx, cl, login); err != nil {
-		log.Printf("sign-in refused: %s (%v)", login, err)
-		authErrorRedirect(w, r, "not_allowed")
+		// A token we will never use must not outlive the request.
+		a.revokeQuietly(tok.AccessToken, login)
+		if errors.Is(err, access.ErrNotAllowed) {
+			log.Printf("sign-in refused: %s (not allowed)", login)
+			authErrorRedirect(w, r, "not_allowed")
+			return
+		}
+		log.Printf("sign-in failed: %s (access check: %v)", login, err)
+		authErrorRedirect(w, r, "server")
 		return
 	}
 
@@ -276,9 +291,26 @@ func (a *serverAuth) current(r *http.Request) (id string, rec session.Record, er
 		return "", session.Record{}, errNoSession
 	}
 	// Rotate or refresh the token here when it is past its maximum age.
-	// Re-check the access policy here when VerifiedAt is stale.
-	_ = a.sessions.Touch(r.Context(), c.Value)
-	return c.Value, rec, nil
+	id = c.Value
+	if !a.policy.AllowAny && a.now().Sub(rec.VerifiedAt) > access.ReverifyAfter {
+		cl := github.New(a.cfg.GraphQLEndpoint, rec.Token)
+		switch err := a.allow(r.Context(), cl, rec.Login); {
+		case err == nil:
+			rec.VerifiedAt = a.now()
+			_ = a.sessions.Update(r.Context(), id, rec)
+		case errors.Is(err, access.ErrNotAllowed):
+			_ = a.sessions.Delete(r.Context(), id)
+			// The session is over, so its token must not stay valid at GitHub.
+			a.revokeQuietly(rec.Token, rec.Login)
+			log.Printf("session ended: %s no longer allowed", rec.Login)
+			return "", session.Record{}, errNoSession
+		default:
+			// GitHub could not answer. Keep the session; try again next request.
+			log.Printf("re-checking access for %s failed: %v", rec.Login, err)
+		}
+	}
+	_ = a.sessions.Touch(r.Context(), id)
+	return id, rec, nil
 }
 
 func (a *serverAuth) Client(r *http.Request) (*github.Client, viewer, error) {

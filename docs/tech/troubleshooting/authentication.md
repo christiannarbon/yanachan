@@ -95,3 +95,27 @@ suggestions are a convenience.
 `POST /api/auth/logout` deletes `session.json`. If you are immediately signed in
 again, you are re-approving an *environment* token that is still present —
 `GH_TOKEN` in your shell, the compose file, or the secret. Remove it there.
+
+## Signed in with GitHub but told *not allowed*
+
+Server mode only. The browser lands on `/?authError=not_allowed` after GitHub
+let you through: the deployment's access policy did not admit you.
+
+- **The policy.** `GHDASH_ALLOWED_USERS` (logins, case-insensitive),
+  `GHDASH_ALLOWED_ORGS` (org logins) or `GHDASH_ALLOW_ANY_USER=true`. Check the
+  login or org is spelled the way GitHub spells it.
+- **An OAuth App (the default) and an org with third-party access
+  restrictions.** Until an org owner approves the app under the org's *Third-party
+  access* settings, the org hides itself from the app's tokens, so the
+  membership check sees "not a member". Ask an owner to approve it, or use
+  `GHDASH_ALLOWED_USERS` meanwhile.
+- **A GitHub App.** It must be installed in the org with the
+  **Members: read** organization permission; without it the org is invisible in
+  the same way.
+
+`authError=server` instead means GitHub could not be asked at all (an outage or
+a network problem); try again.
+
+Access is re-checked every 12 hours on an existing session. Someone removed from
+the org keeps working for at most that long, then is signed out and their token
+is revoked. A GitHub outage during the re-check never signs anyone out.

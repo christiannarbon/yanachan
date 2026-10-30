@@ -153,3 +153,39 @@ func TestViewerIdentity(t *testing.T) {
 		t.Errorf("query %q does not ask for databaseId", query)
 	}
 }
+
+func TestOrgMembership(t *testing.T) {
+	var vars map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		vars = body.Variables
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"o0":{"viewerIsAMember":true},"o1":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to an Organization"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got, err := New(srv.URL, "token").OrgMembership(context.Background(), []string{"acme", "ghost"})
+	if err != nil {
+		t.Fatalf("OrgMembership: %v", err)
+	}
+	if len(got) != 2 || !got["acme"] || got["ghost"] {
+		t.Errorf("got %v, want acme: true, ghost: false", got)
+	}
+	if vars["o0"] != "acme" || vars["o1"] != "ghost" {
+		t.Errorf("variables = %v", vars)
+	}
+}
+
+func TestOrgMembershipTransportError(t *testing.T) {
+	cl, calls := flaky(t, http.StatusBadGateway, http.StatusBadGateway, http.StatusBadGateway)
+
+	if _, err := cl.OrgMembership(context.Background(), []string{"acme"}); err == nil {
+		t.Fatal("OrgMembership succeeded after three 502s")
+	}
+	if *calls != 3 {
+		t.Errorf("sent %d requests, want 3", *calls)
+	}
+}
