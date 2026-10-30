@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -218,6 +219,45 @@ func (c *Client) ViewerIdentity(ctx context.Context) (login string, id int64, er
 		return "", 0, errors.New("github returned an incomplete viewer identity")
 	}
 	return data.Viewer.Login, data.Viewer.DatabaseID, nil
+}
+
+// OrgMembership reports, for each org login, whether the viewer is a member.
+// An org GitHub cannot resolve for this token counts as "not a member": it
+// may not exist, or the org may be hiding itself from this app.
+func (c *Client) OrgMembership(ctx context.Context, orgs []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(orgs))
+	if len(orgs) == 0 {
+		return out, nil
+	}
+	params := make([]string, len(orgs))
+	fields := make([]string, len(orgs))
+	vars := make(map[string]any, len(orgs))
+	for i, org := range orgs {
+		alias := "o" + strconv.Itoa(i)
+		params[i] = "$" + alias + ": String!"
+		fields[i] = alias + ": organization(login: $" + alias + ") { viewerIsAMember }"
+		vars[alias] = org
+	}
+	q := "query(" + strings.Join(params, ", ") + ") {\n  " + strings.Join(fields, "\n  ") + "\n}"
+
+	var data map[string]*struct {
+		ViewerIsAMember bool `json:"viewerIsAMember"`
+	}
+	err := c.Do(ctx, q, vars, &data)
+	if err != nil && len(data) == 0 {
+		return nil, err
+	}
+	for i, org := range orgs {
+		m, ok := data["o"+strconv.Itoa(i)]
+		if !ok {
+			if err == nil {
+				err = errors.New("github left an org out of the membership answer")
+			}
+			return nil, err
+		}
+		out[org] = m != nil && m.ViewerIsAMember
+	}
+	return out, nil
 }
 
 type Membership struct {
