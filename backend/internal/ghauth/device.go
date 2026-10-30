@@ -1,4 +1,4 @@
-// Package ghauth implements the GitHub OAuth device flow.
+// Package ghauth implements the GitHub OAuth device and web flows.
 //
 // The device flow needs only a client ID: no client secret, no callback URL,
 // which is what makes it work identically on a laptop, in Docker and behind a
@@ -55,7 +55,7 @@ func (c *Client) StartDeviceFlow(ctx context.Context) (*DeviceCode, error) {
 	}
 	form := url.Values{"client_id": {c.ClientID}, "scope": {Scopes}}
 	var out DeviceCode
-	if err := c.post(ctx, c.WebBase+"/login/device/code", form, &out); err != nil {
+	if err := postForm(ctx, c.HTTP, c.WebBase+"/login/device/code", form, &out); err != nil {
 		return nil, err
 	}
 	if out.Interval <= 0 {
@@ -77,7 +77,7 @@ func (c *Client) PollDeviceFlow(ctx context.Context, deviceCode string) (string,
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
-	if err := c.post(ctx, c.WebBase+"/login/oauth/access_token", form, &out); err != nil {
+	if err := postForm(ctx, c.HTTP, c.WebBase+"/login/oauth/access_token", form, &out); err != nil {
 		return "", err
 	}
 	switch out.Error {
@@ -102,14 +102,14 @@ func (c *Client) PollDeviceFlow(ctx context.Context, deviceCode string) (string,
 	return out.AccessToken, nil
 }
 
-func (c *Client) post(ctx context.Context, endpoint string, form url.Values, out any) error {
+func postForm(ctx context.Context, hc *http.Client, endpoint string, form url.Values, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
