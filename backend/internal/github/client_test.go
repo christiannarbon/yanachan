@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -125,5 +126,30 @@ func TestDoReportsAnUnauthorizedTokenOnce(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("sent %d requests, want 1", calls)
+	}
+}
+
+func TestViewerIdentity(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		query = body.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat","databaseId":583231}}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	login, id, err := New(srv.URL, "token").ViewerIdentity(context.Background())
+	if err != nil {
+		t.Fatalf("ViewerIdentity: %v", err)
+	}
+	if login != "octocat" || id != 583231 {
+		t.Errorf("got %q, %d, want octocat, 583231", login, id)
+	}
+	if !strings.Contains(query, "databaseId") {
+		t.Errorf("query %q does not ask for databaseId", query)
 	}
 }

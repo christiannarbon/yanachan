@@ -69,6 +69,10 @@ func New(store kv.Store, ring *seal.Keyring, idle, max time.Duration) *Store {
 	return &Store{kv: store, ring: ring, idle: idle, max: max, now: time.Now}
 }
 
+// SetClock replaces time.Now, so tests can share one fake clock with the kv
+// store and the callers.
+func (s *Store) SetClock(now func() time.Time) { s.now = now }
+
 func (s *Store) Create(ctx context.Context, rec Record) (string, error) {
 	id, err := newID()
 	if err != nil {
