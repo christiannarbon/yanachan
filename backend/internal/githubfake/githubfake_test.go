@@ -318,6 +318,29 @@ func TestExpiringTokensAndRefreshRotation(t *testing.T) {
 	}
 }
 
+func TestRefreshCountCountsEveryGrant(t *testing.T) {
+	fake := githubfake.New(t)
+	fake.ExpiringTokens = true
+	fake.AddUser(githubfake.User{Login: "alice", ID: 1})
+	fake.SignInAs("alice")
+	body := exchange(t, fake, codeFrom(t, authorize(t, fake, "S256")), verifier)
+	rt, _ := body["refresh_token"].(string)
+	if n := fake.RefreshCount(); n != 0 {
+		t.Fatalf("after a code exchange RefreshCount = %d, want 0", n)
+	}
+	for _, token := range []string{rt, rt} {
+		postToken(t, fake, url.Values{
+			"client_id":     {githubfake.ClientID},
+			"client_secret": {githubfake.ClientSecret},
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {token},
+		})
+	}
+	if n := fake.RefreshCount(); n != 2 {
+		t.Fatalf("RefreshCount = %d, want 2", n)
+	}
+}
+
 func TestGraphQLViewerIdentity(t *testing.T) {
 	fake := githubfake.New(t)
 	token := signIn(t, fake, githubfake.User{Login: "alice", ID: 42, Orgs: []string{"acme"}})
