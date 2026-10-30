@@ -85,19 +85,21 @@ func newFakeGitHub(t *testing.T) *githubfake.Server {
 func serverTestConfig(t *testing.T, fake *githubfake.Server, publicURL string) config.Config {
 	t.Helper()
 	return config.Config{
-		AuthMode:        config.AuthServer,
-		ClientID:        githubfake.ClientID,
-		ClientSecret:    githubfake.ClientSecret,
-		WebEndpoint:     fake.URL,
-		GraphQLEndpoint: fake.URL + "/graphql",
-		RESTEndpoint:    fake.URL,
-		PublicURL:       publicURL,
-		SessionKeys:     [][]byte{testSessionKey(t)},
-		SessionIdle:     168 * time.Hour,
-		SessionMax:      720 * time.Hour,
-		TokenMaxAge:     8 * time.Hour,
-		DefaultLimit:    25,
-		AllowedOrgs:     []string{"acme"},
+		AuthMode:             config.AuthServer,
+		ClientID:             githubfake.ClientID,
+		ClientSecret:         githubfake.ClientSecret,
+		WebEndpoint:          fake.URL,
+		GraphQLEndpoint:      fake.URL + "/graphql",
+		RESTEndpoint:         fake.URL,
+		PublicURL:            publicURL,
+		SessionKeys:          [][]byte{testSessionKey(t)},
+		SessionIdle:          168 * time.Hour,
+		SessionMax:           720 * time.Hour,
+		TokenMaxAge:          8 * time.Hour,
+		OAuthAppTokenMaxAge:  8 * time.Hour,
+		GitHubAppTokenMaxAge: 8 * time.Hour,
+		DefaultLimit:         25,
+		AllowedOrgs:          []string{"acme"},
 	}
 }
 
@@ -105,9 +107,19 @@ func serverTestConfig(t *testing.T, fake *githubfake.Server, publicURL string) c
 // server-mode handler, sign-in routes included, over a fresh serverAuth.
 func newServerAuthHarness(t *testing.T) (sa *serverAuth, ts *httptest.Server, fake *githubfake.Server) {
 	t.Helper()
+	return newServerAuthHarnessWith(t, nil)
+}
+
+// newServerAuthHarnessWith is newServerAuthHarness with edit applied to the
+// config before the server is built.
+func newServerAuthHarnessWith(t *testing.T, edit func(*config.Config)) (sa *serverAuth, ts *httptest.Server, fake *githubfake.Server) {
+	t.Helper()
 	fake = newFakeGitHub(t)
 	ts = httptest.NewUnstartedServer(nil)
 	cfg := serverTestConfig(t, fake, "http://"+ts.Listener.Addr().String())
+	if edit != nil {
+		edit(&cfg)
+	}
 	clock := &fakeClock{t: time.Now()}
 	store := kv.NewMemory(clock.Now)
 	s, err := newServerModeWith(cfg, store, nil, clock.Now)
