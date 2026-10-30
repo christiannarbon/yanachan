@@ -13,6 +13,7 @@ import (
 
 	"github.com/christiannarbon/yanachan-4k/backend/internal/config"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/ghauth"
+	"github.com/christiannarbon/yanachan-4k/backend/internal/ghcli"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/github"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/seal"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/session"
@@ -257,4 +258,80 @@ func (a *serverAuth) revokeQuietly(token, login string) {
 	if err := a.web.Revoke(ctx, a.cfg.RESTEndpoint, token); err != nil {
 		log.Printf("revoke failed: %s (%v)", login, err)
 	}
+}
+
+var _ requestAuth = (*serverAuth)(nil)
+
+// current resolves the session cookie on r. It is the one place a request
+// becomes a session.
+func (a *serverAuth) current(r *http.Request) (id string, rec session.Record, err error) {
+	c, err := r.Cookie(cookieName(sessionCookieBase, a.cfg.Secure()))
+	if err != nil || c.Value == "" {
+		return "", session.Record{}, errNoSession
+	}
+	rec, err = a.sessions.Get(r.Context(), c.Value)
+	if err != nil {
+		// Not found, expired, unopenable — all mean "sign in again". A Redis
+		// outage also lands here; /api/ready is what reports that one.
+		return "", session.Record{}, errNoSession
+	}
+	// Rotate or refresh the token here when it is past its maximum age.
+	// Re-check the access policy here when VerifiedAt is stale.
+	_ = a.sessions.Touch(r.Context(), c.Value)
+	return c.Value, rec, nil
+}
+
+func (a *serverAuth) Client(r *http.Request) (*github.Client, viewer, error) {
+	_, rec, err := a.current(r)
+	if err != nil {
+		return nil, viewer{}, err
+	}
+	return github.New(a.cfg.GraphQLEndpoint, rec.Token), viewer{Login: rec.Login, Mode: "github"}, nil
+}
+
+func (a *serverAuth) Settings(r *http.Request) (settingsStore, error) {
+	_, rec, err := a.current(r)
+	if err != nil {
+		return nil, err
+	}
+	return userSettingsView{users: a.users, id: rec.UserID}, nil
+}
+
+// userSettingsView pins a UserSettings to one user, so handlers never see a user ID.
+type userSettingsView struct {
+	users *state.UserSettings
+	id    int64
+}
+
+func (v userSettingsView) Get(ctx context.Context) (state.Settings, error) {
+	return v.users.Get(ctx, v.id)
+}
+
+func (v userSettingsView) Save(ctx context.Context, in state.Settings) (state.Settings, error) {
+	return v.users.Save(ctx, v.id, in)
+}
+
+func (a *serverAuth) status(r *http.Request) authStatus {
+	st := authStatus{
+		AuthMode: config.AuthServer,
+		LoginURL: "/api/auth/login",
+		Scopes:   ghauth.Scopes,
+		GhCLI:    ghcli.Status{Detail: "not available in server mode"},
+	}
+	if _, rec, err := a.current(r); err == nil {
+		st.Authenticated = true
+		st.Session = &sessionView{Mode: "github", Login: rec.Login}
+	}
+	return st
+}
+
+func (a *serverAuth) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(cookieName(sessionCookieBase, a.cfg.Secure())); err == nil && c.Value != "" {
+		if err := a.sessions.Delete(r.Context(), c.Value); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not end the session")
+			return
+		}
+	}
+	a.clearCookie(w, sessionCookieBase)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "signed out"})
 }

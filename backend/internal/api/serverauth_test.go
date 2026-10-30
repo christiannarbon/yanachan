@@ -72,30 +72,43 @@ func testSessionKey(t *testing.T) []byte {
 	return b
 }
 
-// newServerAuthHarness starts a fake GitHub and an httptest server whose mux
-// routes /api/auth/login and /api/auth/callback to a fresh serverAuth.
-func newServerAuthHarness(t *testing.T) (sa *serverAuth, ts *httptest.Server, fake *githubfake.Server) {
+// newFakeGitHub starts a fake GitHub with alice and bob in acme and carol in other.
+func newFakeGitHub(t *testing.T) *githubfake.Server {
 	t.Helper()
-	fake = githubfake.New(t)
+	fake := githubfake.New(t)
 	fake.AddUser(githubfake.User{Login: "alice", ID: 1, Orgs: []string{"acme"}})
 	fake.AddUser(githubfake.User{Login: "bob", ID: 2, Orgs: []string{"acme"}})
 	fake.AddUser(githubfake.User{Login: "carol", ID: 3, Orgs: []string{"other"}})
+	return fake
+}
 
-	mux := http.NewServeMux()
-	ts = httptest.NewUnstartedServer(mux)
-	cfg := config.Config{
+// serverTestConfig is a server-mode config pointing at fake.
+func serverTestConfig(t *testing.T, fake *githubfake.Server, publicURL string) config.Config {
+	t.Helper()
+	return config.Config{
 		AuthMode:        config.AuthServer,
 		ClientID:        githubfake.ClientID,
 		ClientSecret:    githubfake.ClientSecret,
 		WebEndpoint:     fake.URL,
 		GraphQLEndpoint: fake.URL + "/graphql",
 		RESTEndpoint:    fake.URL,
-		PublicURL:       "http://" + ts.Listener.Addr().String(),
+		PublicURL:       publicURL,
 		SessionKeys:     [][]byte{testSessionKey(t)},
 		SessionIdle:     168 * time.Hour,
 		SessionMax:      720 * time.Hour,
 		TokenMaxAge:     8 * time.Hour,
+		DefaultLimit:    25,
 	}
+}
+
+// newServerAuthHarness starts a fake GitHub and an httptest server whose mux
+// routes /api/auth/login and /api/auth/callback to a fresh serverAuth.
+func newServerAuthHarness(t *testing.T) (sa *serverAuth, ts *httptest.Server, fake *githubfake.Server) {
+	t.Helper()
+	fake = newFakeGitHub(t)
+	mux := http.NewServeMux()
+	ts = httptest.NewUnstartedServer(mux)
+	cfg := serverTestConfig(t, fake, "http://"+ts.Listener.Addr().String())
 	ring, err := seal.NewKeyring(cfg.SessionKeys)
 	if err != nil {
 		t.Fatal(err)

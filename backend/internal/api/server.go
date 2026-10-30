@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,14 +16,20 @@ import (
 
 	"github.com/christiannarbon/yanachan-4k/backend/internal/board"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/config"
+	"github.com/christiannarbon/yanachan-4k/backend/internal/kv"
+	"github.com/christiannarbon/yanachan-4k/backend/internal/seal"
+	"github.com/christiannarbon/yanachan-4k/backend/internal/session"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/state"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/stats"
 )
 
 type Server struct {
-	cfg   config.Config
-	store *state.Store
-	local *authService
+	cfg config.Config
+	// Local mode sets store and local; server mode sets kv and server.
+	store  *state.Store
+	local  *authService
+	kv     kv.Store
+	server *serverAuth
 	// ra answers whose token and settings a request uses. See requestauth.go.
 	ra requestAuth
 	ui http.Handler
@@ -34,12 +41,58 @@ type Server struct {
 }
 
 func NewServer(cfg config.Config, store *state.Store, ui http.Handler) *Server {
-	local := newAuthService(cfg, store)
+	s := newServerBase(cfg, ui)
+	s.store = store
+	s.local = newAuthService(cfg, store)
+	s.ra = &localAuth{svc: s.local, store: store}
+	return s
+}
+
+// NewServerMode builds the server for GHDASH_AUTH_MODE=server: identity comes
+// from the session cookie; sessions and per-user settings live in Redis/Valkey.
+// It connects and pings (10s) before returning, so a wrong URL or password
+// stops the process at startup instead of failing every sign-in later.
+func NewServerMode(ctx context.Context, cfg config.Config, ui http.Handler) (*Server, error) {
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	store, err := kv.NewRedis(pctx, kv.RedisOptions{
+		URL:      cfg.RedisURL,
+		Password: cfg.RedisPassword,
+		CAFile:   cfg.RedisCAFile,
+		Prefix:   cfg.RedisPrefix,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("connect to redis: %w", err)
+	}
+	s, err := newServerModeWith(cfg, store, ui, time.Now)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// newServerModeWith is NewServerMode over a store and clock the caller provides.
+func newServerModeWith(cfg config.Config, store kv.Store, ui http.Handler, now func() time.Time) (*Server, error) {
+	ring, err := seal.NewKeyring(cfg.SessionKeys)
+	if err != nil {
+		return nil, fmt.Errorf("open session keyring: %w", err)
+	}
+	sessions := session.New(store, ring, cfg.SessionIdle, cfg.SessionMax)
+	sessions.SetClock(now)
+	users := state.NewUserSettings(store, state.DefaultSettings(cfg.DefaultLimit))
+
+	s := newServerBase(cfg, ui)
+	s.kv = store
+	s.server = newServerAuth(cfg, sessions, users, ring)
+	s.server.now = now
+	s.ra = s.server
+	return s, nil
+}
+
+func newServerBase(cfg config.Config, ui http.Handler) *Server {
 	s := &Server{
 		cfg:          cfg,
-		store:        store,
-		local:        local,
-		ra:           &localAuth{svc: local, store: store},
 		ui:           ui,
 		allowedHosts: map[string]bool{},
 	}
@@ -57,8 +110,19 @@ func NewServer(cfg config.Config, store *state.Store, ui http.Handler) *Server {
 			s.allowedHosts[hostname(u.Host)] = true
 		}
 	}
+	if h := cfg.PublicHost(); h != "" {
+		s.allowedHosts[h] = true
+	}
 	delete(s.allowedHosts, "")
 	return s
+}
+
+// Close releases the kv store in server mode; local mode has nothing to close.
+func (s *Server) Close() error {
+	if s.kv == nil {
+		return nil
+	}
+	return s.kv.Close()
 }
 
 func (s *Server) Handler() http.Handler {
@@ -68,12 +132,21 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "time": time.Now()})
 	})
 
+	mux.HandleFunc("GET /api/ready", s.handleReady)
+
 	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
-	mux.HandleFunc("POST /api/auth/gh-cli/approve", s.handleApproveGhCLI)
-	mux.HandleFunc("POST /api/auth/env-token/approve", s.handleApproveEnvToken)
-	mux.HandleFunc("POST /api/auth/device/start", s.handleDeviceStart)
-	mux.HandleFunc("POST /api/auth/device/poll", s.handleDevicePoll)
-	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	if s.local != nil {
+		mux.HandleFunc("POST /api/auth/gh-cli/approve", s.handleApproveGhCLI)
+		mux.HandleFunc("POST /api/auth/env-token/approve", s.handleApproveEnvToken)
+		mux.HandleFunc("POST /api/auth/device/start", s.handleDeviceStart)
+		mux.HandleFunc("POST /api/auth/device/poll", s.handleDevicePoll)
+		mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	}
+	if s.server != nil {
+		mux.HandleFunc("GET /api/auth/login", s.server.handleLogin)
+		mux.HandleFunc("GET /api/auth/callback", s.server.handleCallback)
+		mux.HandleFunc("POST /api/auth/logout", s.server.handleLogout)
+	}
 
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
@@ -99,13 +172,13 @@ func (s *Server) Handler() http.Handler {
 // mutating requests.
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Health is exempt: Kubernetes probes address the pod by IP, and the
-		// endpoint returns nothing worth stealing.
-		if r.URL.Path != "/api/health" && !s.hostAllowed(r) {
+		// Health and readiness are exempt: Kubernetes probes address the pod by
+		// IP, and neither endpoint returns anything worth stealing.
+		if r.URL.Path != "/api/health" && r.URL.Path != "/api/ready" && !s.hostAllowed(r) {
 			writeError(w, http.StatusForbidden, "unrecognised Host header; set GHDASH_ALLOWED_HOSTS to serve this app under that name")
 			return
 		}
-		setSecurityHeaders(w)
+		setSecurityHeaders(w, s.server != nil && s.cfg.Secure())
 		if origin := r.Header.Get("Origin"); origin != "" && s.cfg.DevOrigin != "" && origin == s.cfg.DevOrigin {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
@@ -136,8 +209,14 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 // dashboard and bait a click onto the "use my gh CLI session" button; the
 // resulting POST is same-origin and sails past originAllowed, and the backend
 // reads the real token. Refusing to be framed is what stops that.
-func setSecurityHeaders(w http.ResponseWriter) {
+//
+// HSTS is for server mode over https only: local mode is plain-http loopback,
+// where pinning the browser to https would break it.
+func setSecurityHeaders(w http.ResponseWriter, hsts bool) {
 	h := w.Header()
+	if hsts {
+		h.Set("Strict-Transport-Security", "max-age=31536000")
+	}
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
@@ -210,7 +289,26 @@ func (s *Server) originAllowed(r *http.Request) bool {
 }
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if s.server != nil {
+		writeJSON(w, http.StatusOK, s.server.status(r))
+		return
+	}
 	writeJSON(w, http.StatusOK, s.local.status(r.Context()))
+}
+
+// handleReady is the readiness probe. In server mode a pod that cannot reach
+// Redis cannot serve anyone, so it should stop receiving traffic; liveness
+// (/api/health) never touches Redis, so an outage does not restart pods.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.kv != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+		defer cancel()
+		if err := s.kv.Ping(ctx); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "time": time.Now()})
 }
 
 func (s *Server) handleApproveGhCLI(w http.ResponseWriter, r *http.Request) {
