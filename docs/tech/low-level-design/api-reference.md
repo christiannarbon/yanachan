@@ -9,7 +9,7 @@ a real path is a 405 rather than a 404.
 
 - Errors are `{"error": "..."}` with a status code, written by `writeError`.
 - Every non-`GET`/`HEAD` request passes the [same-origin guard](../architecture/security.md#guard-2--mutating-requests-must-be-same-origin).
-- Every request except `/api/health` passes the [Host allowlist](../architecture/security.md#guard-3--the-host-header-is-pinned-to-loopback).
+- Every request except `/api/health` and `/api/ready` passes the [Host allowlist](../architecture/security.md#guard-3--the-host-header-is-pinned-to-loopback).
 - An unmatched `/api/` path returns a JSON 404, not the SPA's `index.html`.
 - **No response ever contains the token.**
 
@@ -24,6 +24,14 @@ a real path is a 405 rather than a 404.
 Exempt from the Host allowlist so Kubernetes probes can address the pod by IP.
 Requires no session.
 
+### `GET /api/ready`
+
+The readiness probe. Same body as health in local mode. In server mode it pings
+Redis/Valkey with a one-second timeout: `200 {"status": "ok"}`, or
+`503 {"status": "unavailable"}` with no detail while the store is unreachable.
+Health never touches Redis, so an outage takes pods out of rotation without
+restarting them. Host-exempt and session-free, like health.
+
 ## Authentication
 
 ### `GET /api/auth/status`
@@ -32,6 +40,7 @@ What sign-in paths exist, and whether one has been taken.
 
 ```json
 {
+  "authMode": "local",
   "authenticated": true,
   "session": { "mode": "gh-cli", "login": "octocat" },
   "ghCli": { "available": true, "authenticated": true, "login": "octocat",
@@ -190,6 +199,63 @@ Highlights are omitted when there is nothing to report. `reviewed` and the
 [weekly stats](weekly-stats.md#counting-reviews).
 
 `401` without a session, `502` when GitHub failed entirely.
+
+## Server mode
+
+With `GHDASH_AUTH_MODE=server` every request acts as the GitHub user whose
+session cookie it carries. Sessions and per-user settings live in Redis/Valkey;
+nothing is written to disk.
+
+- The local-only routes (`gh-cli/approve`, `env-token/approve`, `device/start`,
+  `device/poll`) are not registered and answer the JSON 404.
+- Every other route, `GET /api/settings` included, needs the session cookie and
+  answers `401` without one.
+
+### `GET /api/auth/status`
+
+```json
+{
+  "authMode": "server",
+  "loginUrl": "/api/auth/login",
+  "authenticated": true,
+  "session": { "mode": "github", "login": "octocat" },
+  "ghCli": { "available": false, "authenticated": false, "login": "",
+             "host": "", "path": "", "detail": "not available in server mode" },
+  "ghCliAllowed": false,
+  "oauthEnabled": false,
+  "envTokenAvailable": false,
+  "oauthScopes": "repo read:org"
+}
+```
+
+`session` is null when signed out.
+
+### `GET /api/auth/login`
+
+A browser navigation, never a fetch. Sets a short-lived sealed cookie holding
+the state and PKCE verifier, then `302` to GitHub's authorize page. An optional
+`return` path (`^/[A-Za-z0-9/_-]*$`, not starting with `//`) is where the
+browser lands afterwards; anything else lands on `/`.
+
+### `GET /api/auth/callback`
+
+Where GitHub sends the browser back. Checks the state, exchanges the code,
+creates the session cookie (or, for the same user, swaps the token in the
+existing session and revokes the old one) and `302`s to the return path.
+Every failure is a `302` to `/?authError=<code>`:
+
+| Code | Meaning |
+| --- | --- |
+| `denied` | The user cancelled at GitHub |
+| `state` | Missing, expired or mismatched sign-in cookie |
+| `exchange` | GitHub refused the code |
+| `not_allowed` | The user is not allowed on this deployment |
+| `server` | Anything else on our side |
+
+### `POST /api/auth/logout`
+
+Deletes the session and clears the cookie. `200 {"status": "signed out"}`.
+Settings survive.
 
 ## Everything else
 
