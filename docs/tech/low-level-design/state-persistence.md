@@ -128,6 +128,35 @@ oldest first, revokes their tokens and deletes them by hash.
 `LastSeenAt` is written back at most once a minute per session, so a board
 refreshing every few seconds is not a Redis write every few seconds.
 
+## Server mode: rotation and sign-out
+
+`backend/internal/api/serverauth.go`
+
+No GitHub token is used past its maximum age, `MaxTokenAge`:
+`GHDASH_GITHUB_APP_TOKEN_MAX_AGE` for a session holding a refresh token,
+`GHDASH_OAUTH_APP_TOKEN_MAX_AGE` for one without, each falling back to
+`GHDASH_TOKEN_MAX_AGE`. Every request checks its session's token before using
+it; a token is also renewed five minutes before GitHub's own expiry.
+
+- **GitHub App** (a refresh token is stored): the server refreshes it. One
+  replica at a time holds `lock:refresh:<hex sha256(session id)>` (30s TTL);
+  the others wait up to two seconds for the new token, then use the current
+  one if it is still valid. GitHub rotates the refresh token on every refresh.
+- **OAuth App** (no refresh token): nothing can be refreshed, so API calls
+  that need GitHub answer `401 {"reauth": true}`. Settings stay readable. The
+  next sign-in on that browser replaces the token in the same session and
+  revokes the old one; the session ID does not change.
+
+| Key | Value | TTL |
+| --- | --- | --- |
+| `lock:refresh:<hex sha256(session id)>` | random owner string | 30s |
+
+A session ends — deleted, and its token revoked at GitHub — when a refresh is
+refused, the refresh token has expired, GitHub answers a request with 401 (the
+app was revoked, or the token was dropped), another user signs in on the same
+browser, access is withdrawn, or the user signs out. Sign-out also expires both
+cookies. Revocation is best effort and never blocks the sign-out.
+
 ## Server mode: settings
 
 `backend/internal/state/users.go`
