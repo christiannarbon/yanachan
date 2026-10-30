@@ -46,6 +46,7 @@ type Server struct {
 	revoked        []string
 	seen           []string
 	authorizeCount int
+	refreshCount   int
 	failRevoke     bool
 }
 
@@ -150,6 +151,14 @@ func (s *Server) AuthorizeCount() int {
 	return s.authorizeCount
 }
 
+// RefreshCount is how many refresh_token grants reached the token endpoint,
+// accepted or not.
+func (s *Server) RefreshCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshCount
+}
+
 // FailRevoke makes token revocation answer 500 until ResumeRevoke.
 func (s *Server) FailRevoke() {
 	s.mu.Lock()
@@ -219,6 +228,7 @@ func (s *Server) handleAccessToken(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	var login string
 	if r.PostForm.Get("grant_type") == "refresh_token" {
+		s.refreshCount++
 		rt, ok := s.refresh[r.PostForm.Get("refresh_token")]
 		if !ok || rt.used {
 			oauthError(w, "bad_refresh_token")
