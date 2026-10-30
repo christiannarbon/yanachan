@@ -17,13 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/christiannarbon/yanachan-4k/backend/internal/access"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/config"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/github"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/githubfake"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/kv"
-	"github.com/christiannarbon/yanachan-4k/backend/internal/seal"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/session"
-	"github.com/christiannarbon/yanachan-4k/backend/internal/state"
 )
 
 type fakeClock struct {
@@ -98,32 +97,28 @@ func serverTestConfig(t *testing.T, fake *githubfake.Server, publicURL string) c
 		SessionMax:      720 * time.Hour,
 		TokenMaxAge:     8 * time.Hour,
 		DefaultLimit:    25,
+		AllowedOrgs:     []string{"acme"},
 	}
 }
 
-// newServerAuthHarness starts a fake GitHub and an httptest server whose mux
-// routes /api/auth/login and /api/auth/callback to a fresh serverAuth.
+// newServerAuthHarness starts a fake GitHub and an httptest server serving the
+// server-mode handler, sign-in routes included, over a fresh serverAuth.
 func newServerAuthHarness(t *testing.T) (sa *serverAuth, ts *httptest.Server, fake *githubfake.Server) {
 	t.Helper()
 	fake = newFakeGitHub(t)
-	mux := http.NewServeMux()
-	ts = httptest.NewUnstartedServer(mux)
+	ts = httptest.NewUnstartedServer(nil)
 	cfg := serverTestConfig(t, fake, "http://"+ts.Listener.Addr().String())
-	ring, err := seal.NewKeyring(cfg.SessionKeys)
+	clock := &fakeClock{t: time.Now()}
+	store := kv.NewMemory(clock.Now)
+	s, err := newServerModeWith(cfg, store, nil, clock.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	clock := &fakeClock{t: time.Now()}
-	store := kv.NewMemory(clock.Now)
-	sessions := session.New(store, ring, cfg.SessionIdle, cfg.SessionMax)
-	sessions.SetClock(clock.Now)
-	sa = newServerAuth(cfg, sessions, state.NewUserSettings(store, state.DefaultSettings(25)), ring)
-	sa.now = clock.Now
+	sa = s.server
 	harnesses.Store(sa, &harness{clock: clock, kv: store})
 	t.Cleanup(func() { harnesses.Delete(sa) })
 
-	mux.HandleFunc("GET /api/auth/login", sa.handleLogin)
-	mux.HandleFunc("GET /api/auth/callback", sa.handleCallback)
+	ts.Config.Handler = s.Handler()
 	ts.Start()
 	t.Cleanup(ts.Close)
 	return sa, ts, fake
@@ -399,7 +394,7 @@ func TestCallbackBadCode(t *testing.T) {
 
 func TestCallbackNotAllowed(t *testing.T) {
 	sa, ts, fake := newServerAuthHarness(t)
-	sa.allow = func(context.Context, *github.Client, string) error { return errors.New("not on the list") }
+	sa.allow = func(context.Context, *github.Client, string) error { return access.ErrNotAllowed }
 	cl, loc := signIn(t, ts, fake, "alice")
 	if loc != "/?authError=not_allowed" {
 		t.Fatalf("location = %q", loc)
@@ -509,5 +504,98 @@ func TestSignInNeverLogsSecrets(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Errorf("log contains a secret:\n%s", out)
 		}
+	}
+}
+
+func TestCallbackRefusesOutsider(t *testing.T) {
+	_, ts, fake := newServerAuthHarness(t)
+	cl, loc := signIn(t, ts, fake, "carol")
+	if loc != "/?authError=not_allowed" {
+		t.Fatalf("location = %q", loc)
+	}
+	if sessionCookie(t, cl, ts) != "" {
+		t.Fatal("outsider got a session cookie")
+	}
+	if !slices.Contains(fake.Revoked(), fake.AccessTokenFor("carol")) {
+		t.Error("carol's token was left valid")
+	}
+}
+
+func TestCallbackAccessCheckOutage(t *testing.T) {
+	sa, ts, fake := newServerAuthHarness(t)
+	sa.allow = func(context.Context, *github.Client, string) error {
+		return errors.New("github returned 502 Bad Gateway")
+	}
+	if _, loc := signIn(t, ts, fake, "alice"); loc != "/?authError=server" {
+		t.Fatalf("location = %q", loc)
+	}
+}
+
+func getSettings(t *testing.T, cl *http.Client, ts *httptest.Server) int {
+	t.Helper()
+	return get(t, cl, ts.URL+"/api/settings").StatusCode
+}
+
+func TestReverifyEndsSessionWhenRemoved(t *testing.T) {
+	sa, ts, fake := newServerAuthHarness(t)
+	cl, _ := signIn(t, ts, fake, "alice")
+	sid := sessionCookie(t, cl, ts)
+	token := fake.AccessTokenFor("alice")
+
+	fake.AddUser(githubfake.User{Login: "alice", ID: 1})
+	harnessClock(sa).Advance(13 * time.Hour)
+	if code := getSettings(t, cl, ts); code != http.StatusUnauthorized {
+		t.Fatalf("settings = %d, want 401", code)
+	}
+	if _, err := sa.sessions.Get(context.Background(), sid); err == nil {
+		t.Error("session survived removal from the org")
+	}
+	if !slices.Contains(fake.Revoked(), token) {
+		t.Error("alice's token was not revoked")
+	}
+}
+
+func TestReverifyNotDueKeepsSession(t *testing.T) {
+	sa, ts, fake := newServerAuthHarness(t)
+	cl, _ := signIn(t, ts, fake, "alice")
+	fake.AddUser(githubfake.User{Login: "alice", ID: 1})
+	harnessClock(sa).Advance(11 * time.Hour)
+	if code := getSettings(t, cl, ts); code != http.StatusOK {
+		t.Fatalf("settings = %d, want 200", code)
+	}
+}
+
+func TestReverifyUpdatesVerifiedAt(t *testing.T) {
+	sa, ts, fake := newServerAuthHarness(t)
+	cl, _ := signIn(t, ts, fake, "alice")
+	clock := harnessClock(sa)
+	clock.Advance(13 * time.Hour)
+	if code := getSettings(t, cl, ts); code != http.StatusOK {
+		t.Fatalf("settings = %d, want 200", code)
+	}
+	rec, err := sa.sessions.Get(context.Background(), sessionCookie(t, cl, ts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.VerifiedAt.Equal(clock.Now()) {
+		t.Errorf("VerifiedAt = %v, want %v", rec.VerifiedAt, clock.Now())
+	}
+}
+
+func TestReverifyKeepsSessionOnOutage(t *testing.T) {
+	sa, ts, fake := newServerAuthHarness(t)
+	cl, _ := signIn(t, ts, fake, "alice")
+	sa.allow = func(context.Context, *github.Client, string) error {
+		return errors.New("github returned 502 Bad Gateway")
+	}
+	harnessClock(sa).Advance(13 * time.Hour)
+	if code := getSettings(t, cl, ts); code != http.StatusOK {
+		t.Fatalf("settings = %d, want 200", code)
+	}
+	if _, err := sa.sessions.Get(context.Background(), sessionCookie(t, cl, ts)); err != nil {
+		t.Errorf("session lost on outage: %v", err)
+	}
+	if revoked := fake.Revoked(); len(revoked) != 0 {
+		t.Errorf("revoked %d tokens during an outage", len(revoked))
 	}
 }
