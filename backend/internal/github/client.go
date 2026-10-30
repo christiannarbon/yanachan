@@ -201,6 +201,25 @@ func (c *Client) Viewer(ctx context.Context) (string, error) {
 	return data.Viewer.Login, nil
 }
 
+// ViewerIdentity returns the login and the numeric user ID (databaseId) of the
+// authenticated user. Server mode keys everything by the ID, which unlike the
+// login can never be renamed or reused.
+func (c *Client) ViewerIdentity(ctx context.Context) (login string, id int64, err error) {
+	var data struct {
+		Viewer struct {
+			Login      string `json:"login"`
+			DatabaseID int64  `json:"databaseId"`
+		} `json:"viewer"`
+	}
+	if err := c.Do(ctx, `query{viewer{login databaseId}}`, nil, &data); err != nil {
+		return "", 0, err
+	}
+	if data.Viewer.Login == "" || data.Viewer.DatabaseID <= 0 {
+		return "", 0, errors.New("github returned an incomplete viewer identity")
+	}
+	return data.Viewer.Login, data.Viewer.DatabaseID, nil
+}
+
 type Membership struct {
 	Orgs  []string `json:"orgs"`
 	Teams []string `json:"teams"`
