@@ -54,6 +54,8 @@ type sessionView struct {
 }
 
 type authStatus struct {
+	AuthMode      string       `json:"authMode"`           // "local" | "server"
+	LoginURL      string       `json:"loginUrl,omitempty"` // server mode only
 	Authenticated bool         `json:"authenticated"`
 	Session       *sessionView `json:"session"`
 	GhCLI         ghcli.Status `json:"ghCli"`
@@ -71,6 +73,7 @@ type pendingView struct {
 
 func (a *authService) status(ctx context.Context) authStatus {
 	st := authStatus{
+		AuthMode:     config.AuthLocal,
 		GhCLIAllowed: a.cfg.AllowGhCLI,
 		OAuthEnabled: a.cfg.ClientID != "",
 		EnvToken:     a.cfg.EnvToken != "",
