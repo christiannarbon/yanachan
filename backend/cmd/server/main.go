@@ -56,6 +56,13 @@ func main() {
 	}
 	defer apiSrv.Close()
 
+	stopReaper := func() {}
+	if cfg.AuthMode == config.AuthServer {
+		var reapCtx context.Context
+		reapCtx, stopReaper = context.WithCancel(context.Background())
+		go apiSrv.RunReaper(reapCtx)
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           apiSrv.Handler(),
@@ -82,6 +89,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Printf("shutting down")
+	stopReaper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
