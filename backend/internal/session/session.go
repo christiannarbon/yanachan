@@ -163,9 +163,13 @@ func (s *Store) LoadForRevocation(ctx context.Context, hash string) (Record, err
 }
 
 // DeleteHash is the reaper's delete. It takes a hash because that is all the
-// reaper ever has.
+// reaper ever has. An index entry that is not a hash is still dropped, or
+// the reaper would find it again on every pass.
 func (s *Store) DeleteHash(ctx context.Context, hash string) error {
 	if !validHash(hash) {
+		if err := s.kv.ZRem(ctx, expiryIndex, hash); err != nil {
+			return fmt.Errorf("session: index: %w", err)
+		}
 		return nil
 	}
 	return s.remove(ctx, hash)
