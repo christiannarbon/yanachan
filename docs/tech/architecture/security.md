@@ -82,6 +82,13 @@ the UI needs to say "signed in as X using Y" — and no token. If you add a fiel
 there, check the test still passes; it is looking for the token string in the
 serialized body.
 
+In server mode, a session that expires has its token revoked at GitHub within
+about five minutes: every replica runs a reaper, one at a time under the
+`lock:reaper` key, that revokes and deletes sessions past their idle or maximum
+age. A failed revocation is logged and the session is deleted anyway. If the
+reaper cannot run, Redis deletes the session an hour later, but the token is
+then only invalidated by GitHub's own expiry or by the user.
+
 ## Deployment posture
 
 - Bind to loopback. The defaults do.
