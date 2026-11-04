@@ -461,6 +461,20 @@ func TestDeleteHash(t *testing.T) {
 	}
 }
 
+func TestDeleteHashDropsBadIndexEntry(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.mem.ZAdd(ctx, expiryIndex, float64(f.c.t.Unix()), "not-a-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.DeleteHash(ctx, "not-a-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if got := indexed(t, f.mem, f.c.t.Add(testMax)); len(got) != 0 {
+		t.Fatalf("index still holds %v", got)
+	}
+}
+
 func TestConcurrentUse(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
