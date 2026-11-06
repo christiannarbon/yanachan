@@ -9,11 +9,15 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from '../i18n'
 import Msg from '../i18n/Msg.vue'
-import { api } from '../lib/api'
+import { ApiError, api } from '../lib/api'
 import type { Settings, Suggestions } from '../lib/types'
 
 const props = defineProps<{ settings: Settings; sessionMode: string; login: string }>()
-const emit = defineEmits<{ (e: 'saved', s: Settings): void; (e: 'signout'): void }>()
+const emit = defineEmits<{
+  (e: 'saved', s: Settings): void
+  (e: 'signout'): void
+  (e: 'authFailure', err: ApiError): void
+}>()
 
 const { t } = useI18n()
 
@@ -34,6 +38,10 @@ async function loadSuggestions() {
   try {
     suggestions.value = await api.suggestions()
   } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      emit('authFailure', e)
+      return
+    }
     suggestions.value = { orgs: [], teams: [], warning: (e as Error).message }
   } finally {
     loadingSuggestions.value = false
@@ -100,6 +108,8 @@ const modeLabel = computed<string>(() => {
       return t.value.settings.modeOauth
     case 'env-token':
       return t.value.settings.modeEnvToken
+    case 'github':
+      return t.value.settings.modeGithub
     default:
       return props.sessionMode
   }
@@ -208,7 +218,9 @@ const modeLabel = computed<string>(() => {
           <template #mode>{{ modeLabel }}</template>
         </Msg>
       </p>
-      <button class="accent" @click="emit('signout')">{{ t.settings.signOut }}</button>
+      <button class="accent" @click="emit('signout')">
+        {{ sessionMode === 'github' ? t.settings.signOutServer : t.settings.signOut }}
+      </button>
     </section>
 
     <div class="actions">

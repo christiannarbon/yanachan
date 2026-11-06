@@ -239,6 +239,21 @@ const en = {
     oauthDenied: 'Authorization was denied on github.com.',
     oauthCopied: 'Code copied to the clipboard',
     oauthCopyManually: 'Copy the code manually',
+
+    serverIntro: 'Sign in with your GitHub account to see your review queues.',
+    serverTitle: 'Sign in with GitHub',
+    serverExplain:
+      'You are sent to GitHub to approve access, then brought back here. The dashboard only ever uses your own access, and only for reading pull requests.',
+    serverSignIn: 'Sign in with GitHub',
+    serverLeaving: 'Opening GitHub',
+    errDenied: 'Sign-in was cancelled on GitHub.',
+    errState: 'The sign-in took too long or was started in another tab. Try again.',
+    errExchange:
+      'GitHub did not accept the sign-in. Try again; if it keeps failing, ask whoever runs this dashboard to check its GitHub app settings.',
+    errNotAllowed:
+      'Your GitHub account is not allowed to use this dashboard. Ask whoever runs it which organization you need to belong to.',
+    errServer: 'Something went wrong while signing in. Try again.',
+    reauthPending: 'Renewing your GitHub sign-in…',
   },
 
   settings: {
@@ -283,6 +298,8 @@ const en = {
     modeOauth: 'OAuth device flow',
     modeEnvToken: 'token from the environment',
     signOut: 'Sign out and forget the token',
+    modeGithub: 'GitHub sign-in',
+    signOutServer: 'Sign out',
   },
 
   theme: {

@@ -28,6 +28,19 @@ back up; nothing fetches on its own.
 Bootstrap: ask `/api/auth/status`; if unauthenticated, render `AuthGate` and
 stop. If authenticated, load settings and refresh.
 
+`AuthGate` branches on the status's `authMode`. Local mode shows the gh CLI,
+environment token and device flow cards; server mode shows one **Sign in with
+GitHub** button. That sign-in is a page navigation to `loginUrl`, never a fetch:
+GitHub's redirect has to happen in the top-level page for the sign-in cookie to
+be set. A failed sign-in comes back as `?authError=<code>`, and `takeAuthError()`
+(`lib/authError.ts`) reads and removes it as the first thing `onMounted` does,
+because routing rewrites the URL right after and would drop it. Every 401 goes
+through `handleAuthFailure()` in `App.vue`. When the body carries
+`"reauth": true` (the token is past its maximum age but the session is fine),
+`lib/reauth.ts` sends the page through GitHub and back to the same path, waiting
+until the tab is visible and going at most once a minute; any other 401, or a
+second reauth within the minute, shows the gate.
+
 A refresh fires both endpoints together — `/api/board` and `/api/stats` — with
 their errors kept in **separate** refs. A failing week must not blank the
 board's own notice, and the dashboard reports its own trouble in place, through
