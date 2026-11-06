@@ -3,10 +3,11 @@ import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from '../i18n'
 import Msg from '../i18n/Msg.vue'
 import { api } from '../lib/api'
+import type { AuthErrorCode } from '../lib/authError'
 import type { AuthStatus, DeviceStart } from '../lib/types'
 import CornerControls from './CornerControls.vue'
 
-const props = defineProps<{ status: AuthStatus }>()
+const props = defineProps<{ status: AuthStatus; authError?: AuthErrorCode | '' }>()
 const emit = defineEmits<{ (e: 'authenticated'): void }>()
 
 const { t } = useI18n()
@@ -127,6 +128,33 @@ async function copyCode() {
 }
 
 const cliStatus = props.status.ghCli
+
+const leaving = ref(false)
+
+/** Held as a code, not a sentence, so it follows a language switch. */
+const authErrorText = computed(() => {
+  switch (props.authError) {
+    case 'denied':
+      return t.value.auth.errDenied
+    case 'state':
+      return t.value.auth.errState
+    case 'exchange':
+      return t.value.auth.errExchange
+    case 'not_allowed':
+      return t.value.auth.errNotAllowed
+    case 'server':
+      return t.value.auth.errServer
+    default:
+      return ''
+  }
+})
+
+/** A navigation, not a fetch: GitHub's redirect must happen in the top-level
+ *  page so the sign-in cookie is set. */
+function signIn() {
+  leaving.value = true
+  window.location.assign(props.status.loginUrl ?? '/api/auth/login')
+}
 </script>
 
 <template>
@@ -135,122 +163,133 @@ const cliStatus = props.status.ghCli
 
     <header class="gate-head">
       <h1>{{ t.appName }}</h1>
-      <p class="soft">{{ t.auth.intro }}</p>
+      <p class="soft">{{ status.authMode === 'server' ? t.auth.serverIntro : t.auth.intro }}</p>
     </header>
 
-    <p v-if="error" class="notice">{{ error }}</p>
-
-    <section class="card option" v-if="status.ghCliAllowed">
-      <div class="option-head">
-        <h2>{{ t.auth.cliTitle }}</h2>
-        <span class="badge" :class="cliStatus.authenticated ? 'badge-green' : 'badge-neutral'">
-          {{
-            cliStatus.authenticated
-              ? t.auth.cliDetected
-              : cliStatus.available
-                ? t.auth.cliNotLoggedIn
-                : t.auth.cliNotFound
-          }}
-        </span>
-      </div>
-
-      <template v-if="cliStatus.authenticated">
-        <p>
-          <Msg :text="cliStatus.login ? t.auth.cliSession : t.auth.cliSessionNoLogin">
-            <template #path><code>{{ cliStatus.path }}</code></template>
-            <template #host><strong>{{ cliStatus.host }}</strong></template>
-            <template #login><strong>{{ cliStatus.login }}</strong></template>
-          </Msg>
-        </p>
-        <p class="soft">
-          <Msg :text="t.auth.cliExplain">
-            <template #command><code>gh auth token</code></template>
-          </Msg>
-        </p>
-        <button class="primary" :disabled="busy !== ''" @click="useGhCli">
-          {{ busy === 'gh-cli' ? t.auth.cliChecking : t.auth.cliApprove }}
-        </button>
-      </template>
-
-      <template v-else-if="cliStatus.available">
-        <p>{{ t.auth.cliNoAccount }}</p>
-        <p class="soft">
-          <Msg :text="t.auth.cliRunLogin">
-            <template #command><code>gh auth login</code></template>
-          </Msg>
-        </p>
-      </template>
-
-      <template v-else>
-        <p class="soft">{{ cliStatus.detail || t.auth.cliMissing }}</p>
-        <p class="soft">
-          <Msg :text="t.auth.cliContainerHint">
-            <template #variable><code>GH_TOKEN</code></template>
-          </Msg>
-        </p>
-      </template>
-    </section>
-
-    <section class="card option" v-if="status.envTokenAvailable">
-      <div class="option-head">
-        <h2>{{ t.auth.envTitle }}</h2>
-        <span class="badge badge-green">{{ t.auth.envAvailable }}</span>
-      </div>
-      <p class="soft">
-        <Msg :text="t.auth.envExplain">
-          <template #variable><code>GH_TOKEN</code></template>
-          <template #command><code>make docker-up</code></template>
-        </Msg>
-      </p>
-      <button class="primary" :disabled="busy !== ''" @click="useEnvToken">
-        {{ busy === 'env-token' ? t.auth.cliChecking : t.auth.envApprove }}
+    <section v-if="status.authMode === 'server'" class="card option">
+      <h2>{{ t.auth.serverTitle }}</h2>
+      <p class="soft">{{ t.auth.serverExplain }}</p>
+      <p v-if="authErrorText" class="notice" role="alert">{{ authErrorText }}</p>
+      <button class="accent" :disabled="leaving" @click="signIn">
+        {{ leaving ? t.auth.serverLeaving : t.auth.serverSignIn }}
       </button>
     </section>
 
-    <section class="card option">
-      <div class="option-head">
-        <h2>{{ t.auth.oauthTitle }}</h2>
-        <span class="badge" :class="status.oauthEnabled ? 'badge-green' : 'badge-neutral'">
-          {{ status.oauthEnabled ? t.auth.oauthEnabled : t.auth.oauthNotConfigured }}
-        </span>
-      </div>
+    <template v-else>
+      <p v-if="error" class="notice">{{ error }}</p>
 
-      <template v-if="!status.oauthEnabled">
-        <p class="soft">
-          <Msg :text="t.auth.oauthSetup">
-            <template #variable><code>GITHUB_CLIENT_ID</code></template>
-          </Msg>
-        </p>
-      </template>
-
-      <template v-else-if="!device">
-        <p class="soft">
-          <Msg :text="t.auth.oauthScopes">
-            <template #scopes><code>{{ status.oauthScopes }}</code></template>
-          </Msg>
-        </p>
-        <button class="primary" :disabled="busy !== ''" @click="startDevice">
-          {{ busy === 'device' ? t.auth.oauthContacting : t.auth.oauthStart }}
-        </button>
-      </template>
-
-      <template v-else>
-        <p>
-          <Msg :text="t.auth.oauthOpen">
-            <template #link>
-              <a :href="device.verificationUri" target="_blank" rel="noopener noreferrer">
-                {{ device.verificationUri }}
-              </a>
-            </template>
-          </Msg>
-        </p>
-        <div class="code-row">
-          <span class="device-code mono">{{ device.userCode }}</span>
-          <button @click="copyCode">{{ t.common.copy }}</button>
+      <section class="card option" v-if="status.ghCliAllowed">
+        <div class="option-head">
+          <h2>{{ t.auth.cliTitle }}</h2>
+          <span class="badge" :class="cliStatus.authenticated ? 'badge-green' : 'badge-neutral'">
+            {{
+              cliStatus.authenticated
+                ? t.auth.cliDetected
+                : cliStatus.available
+                  ? t.auth.cliNotLoggedIn
+                  : t.auth.cliNotFound
+            }}
+          </span>
         </div>
-        <p class="soft">{{ devicePhaseText }}</p>
-      </template>
-    </section>
+
+        <template v-if="cliStatus.authenticated">
+          <p>
+            <Msg :text="cliStatus.login ? t.auth.cliSession : t.auth.cliSessionNoLogin">
+              <template #path><code>{{ cliStatus.path }}</code></template>
+              <template #host><strong>{{ cliStatus.host }}</strong></template>
+              <template #login><strong>{{ cliStatus.login }}</strong></template>
+            </Msg>
+          </p>
+          <p class="soft">
+            <Msg :text="t.auth.cliExplain">
+              <template #command><code>gh auth token</code></template>
+            </Msg>
+          </p>
+          <button class="primary" :disabled="busy !== ''" @click="useGhCli">
+            {{ busy === 'gh-cli' ? t.auth.cliChecking : t.auth.cliApprove }}
+          </button>
+        </template>
+
+        <template v-else-if="cliStatus.available">
+          <p>{{ t.auth.cliNoAccount }}</p>
+          <p class="soft">
+            <Msg :text="t.auth.cliRunLogin">
+              <template #command><code>gh auth login</code></template>
+            </Msg>
+          </p>
+        </template>
+
+        <template v-else>
+          <p class="soft">{{ cliStatus.detail || t.auth.cliMissing }}</p>
+          <p class="soft">
+            <Msg :text="t.auth.cliContainerHint">
+              <template #variable><code>GH_TOKEN</code></template>
+            </Msg>
+          </p>
+        </template>
+      </section>
+
+      <section class="card option" v-if="status.envTokenAvailable">
+        <div class="option-head">
+          <h2>{{ t.auth.envTitle }}</h2>
+          <span class="badge badge-green">{{ t.auth.envAvailable }}</span>
+        </div>
+        <p class="soft">
+          <Msg :text="t.auth.envExplain">
+            <template #variable><code>GH_TOKEN</code></template>
+            <template #command><code>make docker-up</code></template>
+          </Msg>
+        </p>
+        <button class="primary" :disabled="busy !== ''" @click="useEnvToken">
+          {{ busy === 'env-token' ? t.auth.cliChecking : t.auth.envApprove }}
+        </button>
+      </section>
+
+      <section class="card option">
+        <div class="option-head">
+          <h2>{{ t.auth.oauthTitle }}</h2>
+          <span class="badge" :class="status.oauthEnabled ? 'badge-green' : 'badge-neutral'">
+            {{ status.oauthEnabled ? t.auth.oauthEnabled : t.auth.oauthNotConfigured }}
+          </span>
+        </div>
+
+        <template v-if="!status.oauthEnabled">
+          <p class="soft">
+            <Msg :text="t.auth.oauthSetup">
+              <template #variable><code>GITHUB_CLIENT_ID</code></template>
+            </Msg>
+          </p>
+        </template>
+
+        <template v-else-if="!device">
+          <p class="soft">
+            <Msg :text="t.auth.oauthScopes">
+              <template #scopes><code>{{ status.oauthScopes }}</code></template>
+            </Msg>
+          </p>
+          <button class="primary" :disabled="busy !== ''" @click="startDevice">
+            {{ busy === 'device' ? t.auth.oauthContacting : t.auth.oauthStart }}
+          </button>
+        </template>
+
+        <template v-else>
+          <p>
+            <Msg :text="t.auth.oauthOpen">
+              <template #link>
+                <a :href="device.verificationUri" target="_blank" rel="noopener noreferrer">
+                  {{ device.verificationUri }}
+                </a>
+              </template>
+            </Msg>
+          </p>
+          <div class="code-row">
+            <span class="device-code mono">{{ device.userCode }}</span>
+            <button @click="copyCode">{{ t.common.copy }}</button>
+          </div>
+          <p class="soft">{{ devicePhaseText }}</p>
+        </template>
+      </section>
+    </template>
   </div>
 </template>
 
