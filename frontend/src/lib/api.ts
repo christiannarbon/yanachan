@@ -11,9 +11,12 @@ import type {
 
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  /** The server wants the browser to pass through GitHub to renew its token. */
+  reauth: boolean
+  constructor(message: string, status: number, reauth = false) {
     super(message)
     this.status = status
+    this.reauth = reauth
   }
 }
 
@@ -36,7 +39,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       body && typeof body === 'object' && 'error' in body
         ? String((body as { error: unknown }).error)
         : `request failed with ${res.status}`
-    throw new ApiError(message, res.status)
+    const reauth = !!body && typeof body === 'object' && (body as { reauth?: unknown }).reauth === true
+    throw new ApiError(message, res.status, reauth)
   }
   return body as T
 }
