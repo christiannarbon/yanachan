@@ -342,9 +342,11 @@ valkey-down: ## Stop the throwaway Valkey
 	-docker stop yana-valkey
 
 .PHONY: test-redis
-test-redis: ## Run the kv tests against the throwaway Valkey
+test-redis: ## Run the kv and server-mode end-to-end tests against the throwaway Valkey
 	cd $(BACKEND) && GHDASH_TEST_REDIS_URL=redis://127.0.0.1:$(VALKEY_PORT)/0 \
 		GHDASH_TEST_REDIS_PASSWORD=$(VALKEY_PASSWORD) go test -race -count=1 -v ./internal/kv/...
+	cd $(BACKEND) && GHDASH_TEST_REDIS_URL=redis://127.0.0.1:$(VALKEY_PORT)/0 \
+		GHDASH_TEST_REDIS_PASSWORD=$(VALKEY_PASSWORD) go test -race -count=1 -v -run 'TestE2E' ./internal/api/
 
 # ------------------------------------------------------------------- down ---
 
