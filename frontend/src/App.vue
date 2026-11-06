@@ -14,6 +14,8 @@ import { useSideNav } from './composables/useSideNav'
 import Msg from './i18n/Msg.vue'
 import { useI18n } from './i18n'
 import { ApiError, api } from './lib/api'
+import { takeAuthError, type AuthErrorCode } from './lib/authError'
+import { reauthenticate } from './lib/reauth'
 import { isLegacySettingsPath } from './lib/routes'
 import type { AuthStatus, Board, Settings, Stats } from './lib/types'
 
@@ -41,6 +43,11 @@ const now = ref(Date.now())
 /** Settings is a dialog over the board rather than a page, so nothing outside
  *  this flag has to know it is open. */
 const settingsOpen = ref(false)
+/** A failed sign-in's reason, read off the address bar before routing drops it. */
+const authError = ref<AuthErrorCode | ''>('')
+/** The page is leaving for GitHub to renew its token, now or once the tab is
+ *  visible; nothing else should be fetched meanwhile. */
+const reauthPending = ref(false)
 
 let clockTimer: number | undefined
 let refreshTimer: number | undefined
@@ -48,6 +55,7 @@ let stopRouting: (() => void) | undefined
 const REFRESH_MS = 5 * 60 * 1000
 
 onMounted(async () => {
+  authError.value = takeAuthError()
   clockTimer = window.setInterval(() => (now.value = Date.now()), 30_000)
   stopRouting = startRouting()
   window.addEventListener('keydown', onKeydown)
@@ -87,15 +95,32 @@ async function bootstrap() {
       await refreshAll()
     }
   } catch (e) {
-    error.value = (e as Error).message
+    // A session can end between the status call and the settings call.
+    if (!(await handleAuthFailure(e))) error.value = (e as Error).message
   } finally {
     loading.value = false
   }
 }
 
+/** The one answer to a 401: renew the token through GitHub when the server
+ *  asks for it, otherwise go back to the gate. False when e is not a 401. */
+async function handleAuthFailure(e: unknown): Promise<boolean> {
+  if (!(e instanceof ApiError && e.status === 401)) return false
+  if (reauthPending.value) return true
+  const loginUrl = authStatus.value?.loginUrl
+  if (e.reauth && loginUrl && reauthenticate(loginUrl)) {
+    reauthPending.value = true
+    return true
+  }
+  board.value = null
+  authStatus.value = await api.authStatus()
+  return true
+}
+
 /** Both halves of a refresh go out together: they are separate endpoints, and
  *  the landing tab should not wait on the queues it is not showing. */
 async function refreshAll() {
+  if (reauthPending.value) return
   refreshing.value = true
   try {
     await Promise.all([loadBoard(), loadStats()])
@@ -115,12 +140,7 @@ async function loadBoard() {
       go(next.sections[0]?.id ?? 'mine', true)
     }
   } catch (e) {
-    if (e instanceof ApiError && e.status === 401) {
-      board.value = null
-      authStatus.value = await api.authStatus()
-    } else {
-      error.value = (e as Error).message
-    }
+    if (!(await handleAuthFailure(e))) error.value = (e as Error).message
   }
 }
 
@@ -129,9 +149,11 @@ async function loadStats() {
   try {
     stats.value = await api.stats()
   } catch (e) {
-    // A 401 is the board's to handle: it reloads the auth status, and this
-    // half would only race it to the same conclusion.
-    if (!(e instanceof ApiError && e.status === 401)) {
+    // A plain 401 is the board's to handle: it reloads the auth status, and
+    // this half would only race it to the same conclusion.
+    if (e instanceof ApiError && e.status === 401) {
+      if (e.reauth) await handleAuthFailure(e)
+    } else {
       statsError.value = (e as Error).message
     }
   }
@@ -149,6 +171,7 @@ async function retry(half: 'board' | 'stats') {
 }
 
 async function onAuthenticated() {
+  authError.value = ''
   await bootstrap()
 }
 
@@ -232,8 +255,11 @@ async function toggleOnlyActive() {
     <AuthGate
       v-else-if="authStatus && !authStatus.authenticated"
       :status="authStatus"
+      :auth-error="authError"
       @authenticated="onAuthenticated"
     />
+
+    <p v-else-if="reauthPending && !board" class="centered notice">{{ t.auth.reauthPending }}</p>
 
     <template v-else-if="board && settings">
       <header class="topbar">
@@ -291,6 +317,7 @@ async function toggleOnlyActive() {
         </aside>
 
         <main class="content">
+          <p v-if="reauthPending" class="notice">{{ t.auth.reauthPending }}</p>
           <ErrorNotice v-if="error" :message="error" :busy="refreshing" @retry="retry('board')" />
           <p v-if="board.warning" class="notice">{{ t.board.githubReported(board.warning) }}</p>
 
@@ -372,6 +399,7 @@ async function toggleOnlyActive() {
           :login="board.login"
           @saved="onSettingsSaved"
           @signout="onSignOut"
+          @auth-failure="handleAuthFailure"
         />
       </ModalDialog>
     </template>
