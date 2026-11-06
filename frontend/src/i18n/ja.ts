@@ -204,6 +204,21 @@ const ja: Messages = {
     oauthDenied: 'github.com で認可が拒否されました。',
     oauthCopied: 'コードをクリップボードにコピーしました',
     oauthCopyManually: 'コードを手動でコピーしてください',
+
+    serverIntro: 'GitHub アカウントでサインインすると、レビュー待ちの一覧を確認できます。',
+    serverTitle: 'GitHub でサインイン',
+    serverExplain:
+      'GitHub に移動してアクセスを承認すると、このページに戻ります。ダッシュボードが使うのはあなた自身の権限だけで、用途はプルリクエストの読み取りに限られます。',
+    serverSignIn: 'GitHub でサインイン',
+    serverLeaving: 'GitHub を開いています',
+    errDenied: 'GitHub でサインインがキャンセルされました。',
+    errState: 'サインインに時間がかかりすぎたか、別のタブで開始されました。もう一度お試しください。',
+    errExchange:
+      'GitHub がサインインを受け付けませんでした。もう一度お試しください。繰り返し失敗する場合は、このダッシュボードの管理者に GitHub アプリの設定を確認してもらってください。',
+    errNotAllowed:
+      'この GitHub アカウントではダッシュボードを利用できません。どの Organization に所属する必要があるか、管理者に確認してください。',
+    errServer: 'サインイン中に問題が発生しました。もう一度お試しください。',
+    reauthPending: 'GitHub のサインインを更新しています…',
   },
 
   settings: {
@@ -244,6 +259,8 @@ const ja: Messages = {
     modeOauth: 'OAuth デバイスフロー',
     modeEnvToken: '環境変数のトークン',
     signOut: 'サインアウトしてトークンを破棄',
+    modeGithub: 'GitHub アカウント',
+    signOutServer: 'サインアウト',
   },
 
   theme: {
