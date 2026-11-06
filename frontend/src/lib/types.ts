@@ -13,6 +13,10 @@ export interface SessionView {
 }
 
 export interface AuthStatus {
+  /** Which identity model the backend runs. */
+  authMode: 'local' | 'server'
+  /** Server mode only: where the browser navigates to sign in. */
+  loginUrl?: string
   authenticated: boolean
   session: SessionView | null
   ghCli: GhCliStatus
