@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -117,5 +118,6 @@ func postForm(ctx context.Context, hc *http.Client, endpoint string, form url.Va
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("github returned %s", resp.Status)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	// A token response is a few hundred bytes; GitHub never needs more.
+	return json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(out)
 }
