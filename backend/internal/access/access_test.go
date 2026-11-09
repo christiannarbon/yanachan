@@ -58,7 +58,7 @@ func clientFor(t *testing.T, login string) *github.Client {
 
 func TestPolicyAllowAny(t *testing.T) {
 	m := &stubMember{}
-	if err := (access.Policy{AllowAny: true}).Check(context.Background(), m, "anyone"); err != nil {
+	if err := (access.Policy{AllowAny: true}).Check(context.Background(), m, "anyone", 0); err != nil {
 		t.Fatal(err)
 	}
 	if m.calls != 0 {
@@ -68,7 +68,7 @@ func TestPolicyAllowAny(t *testing.T) {
 
 func TestPolicyUserListCaseInsensitive(t *testing.T) {
 	m := &stubMember{}
-	if err := (access.Policy{Users: []string{"Alice"}}).Check(context.Background(), m, "alice"); err != nil {
+	if err := (access.Policy{Users: []string{"Alice"}}).Check(context.Background(), m, "alice", 0); err != nil {
 		t.Fatal(err)
 	}
 	if m.calls != 0 {
@@ -77,21 +77,21 @@ func TestPolicyUserListCaseInsensitive(t *testing.T) {
 }
 
 func TestPolicyOrgMember(t *testing.T) {
-	err := (access.Policy{Orgs: []string{"acme"}}).Check(context.Background(), clientFor(t, "alice"), "alice")
+	err := (access.Policy{Orgs: []string{"acme"}}).Check(context.Background(), clientFor(t, "alice"), "alice", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestPolicyOrgNonMember(t *testing.T) {
-	err := (access.Policy{Orgs: []string{"acme"}}).Check(context.Background(), clientFor(t, "carol"), "carol")
+	err := (access.Policy{Orgs: []string{"acme"}}).Check(context.Background(), clientFor(t, "carol"), "carol", 0)
 	if !errors.Is(err, access.ErrNotAllowed) {
 		t.Fatalf("err = %v, want ErrNotAllowed", err)
 	}
 }
 
 func TestPolicyUnknownOrg(t *testing.T) {
-	err := (access.Policy{Orgs: []string{"ghost"}}).Check(context.Background(), clientFor(t, "alice"), "alice")
+	err := (access.Policy{Orgs: []string{"ghost"}}).Check(context.Background(), clientFor(t, "alice"), "alice", 0)
 	if !errors.Is(err, access.ErrNotAllowed) {
 		t.Fatalf("err = %v, want ErrNotAllowed", err)
 	}
@@ -99,14 +99,14 @@ func TestPolicyUnknownOrg(t *testing.T) {
 
 func TestPolicyEmptyDenies(t *testing.T) {
 	m := &stubMember{member: map[string]bool{}}
-	if err := (access.Policy{}).Check(context.Background(), m, "alice"); !errors.Is(err, access.ErrNotAllowed) {
+	if err := (access.Policy{}).Check(context.Background(), m, "alice", 0); !errors.Is(err, access.ErrNotAllowed) {
 		t.Fatalf("err = %v, want ErrNotAllowed", err)
 	}
 }
 
 func TestPolicyTransientError(t *testing.T) {
 	m := &stubMember{err: errors.New("github returned 502 Bad Gateway")}
-	err := (access.Policy{Orgs: []string{"acme"}}).Check(context.Background(), m, "alice")
+	err := (access.Policy{Orgs: []string{"acme"}}).Check(context.Background(), m, "alice", 0)
 	if err == nil || errors.Is(err, access.ErrNotAllowed) {
 		t.Fatalf("err = %v, want a non-refusal error", err)
 	}
@@ -121,5 +121,45 @@ func TestPolicyFromConfig(t *testing.T) {
 	want := access.Policy{Orgs: []string{"acme"}, Users: []string{"alice"}, AllowAny: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestPolicyUserIDs(t *testing.T) {
+	m := &stubMember{}
+	p := access.Policy{UserIDs: []int64{1001}}
+	if err := p.Check(context.Background(), m, "renamed-alice", 1001); err != nil {
+		t.Fatalf("allowed ID refused: %v", err)
+	}
+	if err := p.Check(context.Background(), m, "alice", 1002); !errors.Is(err, access.ErrNotAllowed) {
+		t.Fatalf("another ID with an allowed-looking login: err = %v, want ErrNotAllowed", err)
+	}
+}
+
+func TestPolicyFromConfigSplitsIDs(t *testing.T) {
+	p := access.PolicyFromConfig(config.Config{AllowedUsers: []string{"alice", "id:1002", "Bob"}})
+	if !reflect.DeepEqual(p.Users, []string{"alice", "Bob"}) || !reflect.DeepEqual(p.UserIDs, []int64{1002}) {
+		t.Fatalf("users = %v, ids = %v", p.Users, p.UserIDs)
+	}
+}
+
+func TestParseUserID(t *testing.T) {
+	cases := []struct {
+		in     string
+		id     int64
+		isID   bool
+		hasErr bool
+	}{
+		{"alice", 0, false, false},
+		{"id:42", 42, true, false},
+		{"id:0", 0, true, true},
+		{"id:-3", 0, true, true},
+		{"id:abc", 0, true, true},
+		{"id:", 0, true, true},
+	}
+	for _, tc := range cases {
+		id, isID, err := access.ParseUserID(tc.in)
+		if id != tc.id || isID != tc.isID || (err != nil) != tc.hasErr {
+			t.Errorf("ParseUserID(%q) = %d, %v, %v", tc.in, id, isID, err)
+		}
 	}
 }
