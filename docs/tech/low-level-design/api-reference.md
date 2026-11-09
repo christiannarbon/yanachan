@@ -11,7 +11,8 @@ a real path is a 405 rather than a 404.
 - Every non-`GET`/`HEAD` request passes the [same-origin guard](../architecture/security.md#guard-2--mutating-requests-must-be-same-origin).
 - Every request except `/api/health` and `/api/ready` passes the [Host allowlist](../architecture/security.md#guard-3--the-host-header-is-pinned-to-loopback).
 - An unmatched `/api/` path returns a JSON 404, not the SPA's `index.html`.
-- **No response ever contains the token.**
+- **No response ever contains a token, a session ID or the client secret.**
+- A `401` means one of two things; see [401 responses](#401-responses).
 
 ## Health
 
@@ -53,14 +54,17 @@ What sign-in paths exist, and whether one has been taken.
 }
 ```
 
-`session` is null when unauthenticated. `pendingDevice` appears only while a
-device flow is in progress and carries `userCode`, `verificationUri`,
+`authMode` is `local` or `server`. `loginUrl` is present only in server mode
+([example](#get-apiauthstatus-1)). `session` is null when unauthenticated.
+`pendingDevice` appears only while a device flow is in progress and carries `userCode`, `verificationUri`,
 `expiresAt` and `interval`.
 
 `TestAuthStatusNeverLeaksToken` asserts the token string does not appear
 anywhere in this body. Adding a field here means re-checking that test.
 
 ### `POST /api/auth/gh-cli/approve`
+
+Local mode only; 404 in server mode.
 
 Runs `gh auth token` — this is the first moment the token is read — and stores
 the session.
@@ -70,9 +74,11 @@ logged in, or disallowed by `GHDASH_ALLOW_GH_CLI=false`.
 
 ### `POST /api/auth/env-token/approve`
 
-Same, for a token already in the environment. `400` when there is none.
+Local mode only; 404 in server mode. Same, for a token already in the environment. `400` when there is none.
 
 ### `POST /api/auth/device/start`
+
+Local mode only; 404 in server mode.
 
 ```json
 { "userCode": "ABCD-1234", "verificationUri": "https://github.com/login/device",
@@ -82,6 +88,8 @@ Same, for a token already in the environment. `400` when there is none.
 `400` when `GITHUB_CLIENT_ID` is unset.
 
 ### `POST /api/auth/device/poll`
+
+Local mode only; 404 in server mode.
 
 ```json
 { "state": "pending", "session": null }
@@ -93,7 +101,8 @@ seconds and backs off on `slow_down`.
 
 ### `POST /api/auth/logout`
 
-Deletes `session.json`. Settings survive.
+Local mode: deletes `session.json`. Settings survive. Server mode: see
+[below](#post-apiauthlogout-1).
 
 ## Settings
 
@@ -239,9 +248,11 @@ browser lands afterwards; anything else lands on `/`.
 
 ### `GET /api/auth/callback`
 
-Where GitHub sends the browser back. Checks the state, exchanges the code,
+Where GitHub sends the browser back, with `code` and `state`, or with `error`
+when the user cancelled. Checks the state, exchanges the code,
 creates the session cookie (or, for the same user, swaps the token in the
-existing session and revokes the old one) and `302`s to the return path.
+existing session and revokes the old one — this is how an OAuth App token is
+rotated, and the session ID does not change) and `302`s to the return path.
 Every failure is a `302` to `/?authError=<code>`:
 
 | Code | Meaning |
@@ -254,8 +265,21 @@ Every failure is a `302` to `/?authError=<code>`:
 
 ### `POST /api/auth/logout`
 
-Deletes the session and clears the cookie. `200 {"status": "signed out"}`.
-Settings survive.
+Deletes the session, revokes its token at GitHub and expires both cookies.
+`200 {"status": "signed out"}`. Revocation is best effort and never fails the
+sign-out. Settings survive.
+
+### 401 responses
+
+In server mode a `401` comes in two shapes:
+
+| Body | Meaning | What the client does |
+| --- | --- | --- |
+| `{"error": "…"}` | No session, or it ended | Show the sign-in screen |
+| `{"error": "…", "reauth": true}` | The session is intact, but its OAuth App token is past its maximum age | Navigate to `loginUrl?return=<current path>`; GitHub approves silently and the token is replaced in the same session |
+
+`reauth` only appears on routes that call GitHub. `GET` and `PUT /api/settings`
+keep working while a session waits to re-authorise.
 
 ## Everything else
 
