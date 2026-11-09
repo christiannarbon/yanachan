@@ -74,7 +74,7 @@ Everything lives in [`docs/`](docs/).
 
 ## A few things worth knowing up front
 
-- **There is no login.** The GitHub token lives on the server, so anything that
+- **In local mode there is no login.** The GitHub token lives on the server, so anything that
   can reach the port is already authenticated. The app binds to loopback and
   refuses unrecognised `Host` headers to keep that honest — read
   [the security model](docs/tech/architecture/security.md) before exposing it.
@@ -106,6 +106,15 @@ make help      # every target
 ```
 
 `make doctor` checks the toolchain.
+
+## Running it for a team
+
+Server mode serves a whole team from one shared hostname: each person signs in
+with their own GitHub account and sees only what their own token can see. It
+needs a GitHub OAuth App (or GitHub App) and a Redis or Valkey. Start with
+[OAuth App or GitHub App](docs/usage/github-app.md), then
+[Redis or Valkey](docs/usage/redis.md); what users see is in
+[authentication](docs/usage/authentication.md#server-mode).
 
 ## THIS IS ME JUST DOING SOME STORY TELLING
 
