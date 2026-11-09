@@ -324,6 +324,9 @@ var returnPaths = []struct{ in, want string }{
 	{"/a/../b", "/"},
 	{"%2F%2Fevil", "/"},
 	{"", "/"},
+	{"/api/auth/login", "/"},
+	{"/api", "/"},
+	{"/apiary", "/apiary"},
 }
 
 func TestLoginReturnPath(t *testing.T) {
@@ -406,7 +409,7 @@ func TestCallbackBadCode(t *testing.T) {
 
 func TestCallbackNotAllowed(t *testing.T) {
 	sa, ts, fake := newServerAuthHarness(t)
-	sa.allow = func(context.Context, *github.Client, string) error { return access.ErrNotAllowed }
+	sa.allow = func(context.Context, *github.Client, string, int64) error { return access.ErrNotAllowed }
 	cl, loc := signIn(t, ts, fake, "alice")
 	if loc != "/?authError=not_allowed" {
 		t.Fatalf("location = %q", loc)
@@ -535,12 +538,20 @@ func TestCallbackRefusesOutsider(t *testing.T) {
 
 func TestCallbackAccessCheckOutage(t *testing.T) {
 	sa, ts, fake := newServerAuthHarness(t)
-	sa.allow = func(context.Context, *github.Client, string) error {
+	sa.allow = func(context.Context, *github.Client, string, int64) error {
 		return errors.New("github returned 502 Bad Gateway")
 	}
 	if _, loc := signIn(t, ts, fake, "alice"); loc != "/?authError=server" {
 		t.Fatalf("location = %q", loc)
 	}
+}
+
+// longTokenAge keeps the token usable past ReverifyAfter, so the reverify
+// tests reach the re-check rather than the token's retirement.
+func longTokenAge(c *config.Config) {
+	c.TokenMaxAge = 24 * time.Hour
+	c.OAuthAppTokenMaxAge = 24 * time.Hour
+	c.GitHubAppTokenMaxAge = 24 * time.Hour
 }
 
 func getSettings(t *testing.T, cl *http.Client, ts *httptest.Server) int {
@@ -549,7 +560,7 @@ func getSettings(t *testing.T, cl *http.Client, ts *httptest.Server) int {
 }
 
 func TestReverifyEndsSessionWhenRemoved(t *testing.T) {
-	sa, ts, fake := newServerAuthHarness(t)
+	sa, ts, fake := newServerAuthHarnessWith(t, longTokenAge)
 	cl, _ := signIn(t, ts, fake, "alice")
 	sid := sessionCookie(t, cl, ts)
 	token := fake.AccessTokenFor("alice")
@@ -568,7 +579,7 @@ func TestReverifyEndsSessionWhenRemoved(t *testing.T) {
 }
 
 func TestReverifyNotDueKeepsSession(t *testing.T) {
-	sa, ts, fake := newServerAuthHarness(t)
+	sa, ts, fake := newServerAuthHarnessWith(t, longTokenAge)
 	cl, _ := signIn(t, ts, fake, "alice")
 	fake.AddUser(githubfake.User{Login: "alice", ID: 1})
 	harnessClock(sa).Advance(11 * time.Hour)
@@ -578,7 +589,7 @@ func TestReverifyNotDueKeepsSession(t *testing.T) {
 }
 
 func TestReverifyUpdatesVerifiedAt(t *testing.T) {
-	sa, ts, fake := newServerAuthHarness(t)
+	sa, ts, fake := newServerAuthHarnessWith(t, longTokenAge)
 	cl, _ := signIn(t, ts, fake, "alice")
 	clock := harnessClock(sa)
 	clock.Advance(13 * time.Hour)
@@ -595,9 +606,9 @@ func TestReverifyUpdatesVerifiedAt(t *testing.T) {
 }
 
 func TestReverifyKeepsSessionOnOutage(t *testing.T) {
-	sa, ts, fake := newServerAuthHarness(t)
+	sa, ts, fake := newServerAuthHarnessWith(t, longTokenAge)
 	cl, _ := signIn(t, ts, fake, "alice")
-	sa.allow = func(context.Context, *github.Client, string) error {
+	sa.allow = func(context.Context, *github.Client, string, int64) error {
 		return errors.New("github returned 502 Bad Gateway")
 	}
 	harnessClock(sa).Advance(13 * time.Hour)
