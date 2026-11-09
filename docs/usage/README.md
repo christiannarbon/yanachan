@@ -8,7 +8,7 @@ knowledge is assumed; if you are here to change the code, start at
 
 1. **[Getting started](getting-started.md)** — install the dependencies, build,
    and open the dashboard.
-2. **[Authentication](authentication.md)** — pick one of the three sign-in paths.
+2. **[Authentication](authentication.md)** — pick one of the three sign-in paths, or read how server mode signs a team in.
 3. **[Your week](weekly-dashboard.md)** — the tab you land on.
 
 ## Reading the dashboard
@@ -29,5 +29,12 @@ knowledge is assumed; if you are here to change the code, start at
 
 - [Docker](docker.md) — one container, state on a volume, published on loopback.
 - [Kubernetes](kubernetes.md) — a local cluster, one command up, one command down.
+
+## For organisations
+
+- [OAuth App or GitHub App](github-app.md) — register the app server mode signs
+  everyone in with, and choose between the two.
+- [Redis or Valkey](redis.md) — where server mode keeps sessions and settings,
+  and how to harden it.
 
 Something not behaving? See [troubleshooting](../tech/troubleshooting/).
