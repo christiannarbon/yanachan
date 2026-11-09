@@ -21,6 +21,9 @@ type Store interface {
 	SetNX(ctx context.Context, key string, val []byte, ttl time.Duration) (bool, error)
 	// DeleteIfEqual is a compare-and-delete script, used to release a lock.
 	DeleteIfEqual(ctx context.Context, key string, val []byte) (bool, error)
+	// SetIfEqual replaces key with val (and ttl, as Set) only if it still holds
+	// old, and reports whether it did. A missing key never matches.
+	SetIfEqual(ctx context.Context, key string, old, val []byte, ttl time.Duration) (bool, error)
 	// Delete mirrors DEL; a missing key is not an error.
 	Delete(ctx context.Context, keys ...string) error
 	// Expire mirrors PEXPIRE; ttl <= 0 deletes the key.
