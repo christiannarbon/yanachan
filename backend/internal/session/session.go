@@ -19,13 +19,29 @@ import (
 
 var ErrNotFound = errors.New("session not found")
 
+// ErrUnreadable is a session sealed with a key this keyring does not hold:
+// another replica may have a newer key. It is ErrNotFound to callers that
+// only need to know whether there is a usable session, but it is never
+// deleted, so a replica that can open it can still use or revoke it.
+var ErrUnreadable = fmt.Errorf("%w: sealed with a key this replica lacks", ErrNotFound)
+
+// ErrSkip, returned by a Modify function, means there is nothing to write.
+var ErrSkip = errors.New("session: nothing to write")
+
+// ErrConflict means other writers kept changing the session while Modify
+// tried to apply its change.
+var ErrConflict = errors.New("session: changed concurrently, try again")
+
+// modifyAttempts bounds how often Modify re-reads after losing a race.
+const modifyAttempts = 5
+
 const (
 	// touchEvery bounds how often LastSeenAt is written back; otherwise every
 	// board refresh would be a write.
 	touchEvery = time.Minute
 	// RevokeGrace keeps a dead session's key around long enough for the
 	// reaper to revoke its token at GitHub. The TTL is only the backstop.
-	RevokeGrace = time.Hour
+	RevokeGrace = 24 * time.Hour
 	expiryIndex = "session-expiry"
 	idLen       = 43
 )
@@ -55,9 +71,9 @@ type stored struct {
 	VerifiedAt       time.Time `json:"verifiedAt"`
 }
 
-// Store needs no mutex of its own: kv.Store is safe for concurrent use, two
-// replicas touching one session write equivalent values, and token rotation
-// is serialised by the caller's refresh lock.
+// Store needs no mutex of its own: every change is a compare-and-set on the
+// stored value, so concurrent writers on any replica never overwrite each
+// other's fields; the loser re-reads and re-applies its change.
 type Store struct {
 	kv        kv.Store
 	ring      *seal.Keyring
@@ -101,36 +117,81 @@ func (s *Store) Get(ctx context.Context, id string) (Record, error) {
 	return s.live(ctx, hashID(id))
 }
 
+// Touch moves LastSeenAt forward, at most once per touchEvery.
 func (s *Store) Touch(ctx context.Context, id string) error {
-	if !validID(id) {
-		return ErrNotFound
-	}
-	h := hashID(id)
-	rec, err := s.live(ctx, h)
-	if err != nil {
-		return err
-	}
 	now := s.now()
-	if now.Sub(rec.LastSeenAt) < touchEvery {
+	_, err := s.Modify(ctx, id, func(r *Record) error {
+		if now.Sub(r.LastSeenAt) < touchEvery {
+			return ErrSkip
+		}
+		r.LastSeenAt = now
 		return nil
-	}
-	rec.LastSeenAt = now
-	return s.save(ctx, h, rec)
+	})
+	return err
 }
 
-// Update keeps the stored CreatedAt, so no caller can carry a session past
-// its maximum age.
-func (s *Store) Update(ctx context.Context, id string, rec Record) error {
+// Modify applies fn to the current record and stores the result only if the
+// session was not written in between; otherwise it re-reads and runs fn
+// again. fn should change only the fields it owns, so that a concurrent
+// change to other fields, such as a rotated token, survives. CreatedAt is
+// always kept, so no caller can carry a session past its maximum age.
+func (s *Store) Modify(ctx context.Context, id string, fn func(*Record) error) (Record, error) {
 	if !validID(id) {
-		return ErrNotFound
+		return Record{}, ErrNotFound
 	}
 	h := hashID(id)
-	old, err := s.live(ctx, h)
-	if err != nil {
-		return err
+	for range modifyAttempts {
+		raw, cur, err := s.read(ctx, h)
+		if err != nil {
+			return Record{}, err
+		}
+		if !s.now().Before(s.effectiveExpiry(cur)) {
+			return Record{}, ErrNotFound
+		}
+		next := cur
+		if err := fn(&next); err != nil {
+			if errors.Is(err, ErrSkip) {
+				return cur, nil
+			}
+			return Record{}, err
+		}
+		next.CreatedAt = cur.CreatedAt
+		ok, err := s.replace(ctx, h, raw, next)
+		if err != nil {
+			return Record{}, err
+		}
+		if ok {
+			return next, nil
+		}
 	}
-	rec.CreatedAt = old.CreatedAt
-	return s.save(ctx, h, rec)
+	return Record{}, ErrConflict
+}
+
+// DeleteIf deletes the session only if match approves it and nothing has
+// written to it since it was read. It returns the record it judged.
+func (s *Store) DeleteIf(ctx context.Context, id string, match func(Record) bool) (Record, bool, error) {
+	if !validID(id) {
+		return Record{}, false, ErrNotFound
+	}
+	h := hashID(id)
+	raw, rec, err := s.read(ctx, h)
+	if err != nil {
+		return Record{}, false, err
+	}
+	if !match(rec) {
+		return rec, false, nil
+	}
+	ok, err := s.kv.DeleteIfEqual(ctx, key(h), raw)
+	if err != nil {
+		return Record{}, false, fmt.Errorf("session: delete: %w", err)
+	}
+	if !ok {
+		return rec, false, nil
+	}
+	if err := s.kv.ZRem(ctx, expiryIndex, h); err != nil {
+		return rec, true, fmt.Errorf("session: index: %w", err)
+	}
+	return rec, true, nil
 }
 
 func (s *Store) Delete(ctx context.Context, id string) error {
@@ -154,7 +215,7 @@ func (s *Store) Expired(ctx context.Context, now time.Time, limit int64) ([]stri
 func KeyHash(id string) string { return hashID(id) }
 
 // LoadForRevocation ignores expiry; it is how the reaper reads a dead
-// session's token.
+// session's token. ErrUnreadable means another replica must do it.
 func (s *Store) LoadForRevocation(ctx context.Context, hash string) (Record, error) {
 	if !validHash(hash) {
 		return Record{}, ErrNotFound
@@ -236,32 +297,38 @@ func (s *Store) live(ctx context.Context, hash string) (Record, error) {
 	return rec, nil
 }
 
-// load treats a value it cannot read as gone, and removes it: either its key
-// was rotated out of the ring or it was tampered with, and either way the
-// user signs in again.
 func (s *Store) load(ctx context.Context, hash string) (Record, error) {
-	raw, err := s.kv.Get(ctx, key(hash))
-	if errors.Is(err, kv.ErrNotFound) {
-		return Record{}, ErrNotFound
-	}
-	if err != nil {
-		return Record{}, fmt.Errorf("session: load: %w", err)
-	}
-	rec, ok := s.decode(raw, hash)
-	if !ok {
-		if err := s.remove(ctx, hash); err != nil {
-			return Record{}, err
-		}
-		return Record{}, ErrNotFound
-	}
-	return rec, nil
+	_, rec, err := s.read(ctx, hash)
+	return rec, err
 }
 
-func (s *Store) decode(raw []byte, hash string) (Record, bool) {
+// read returns the stored bytes with the record, for compare-and-set. A value
+// that is not JSON is removed: nothing can ever read it. A value that does
+// not open is left alone: its key may be on another replica, which can still
+// use it and revoke its token.
+func (s *Store) read(ctx context.Context, hash string) ([]byte, Record, error) {
+	raw, err := s.kv.Get(ctx, key(hash))
+	if errors.Is(err, kv.ErrNotFound) {
+		return nil, Record{}, ErrNotFound
+	}
+	if err != nil {
+		return nil, Record{}, fmt.Errorf("session: load: %w", err)
+	}
 	var st stored
 	if err := json.Unmarshal(raw, &st); err != nil {
-		return Record{}, false
+		if err := s.remove(ctx, hash); err != nil {
+			return nil, Record{}, err
+		}
+		return nil, Record{}, ErrNotFound
 	}
+	rec, ok := s.decode(st, hash)
+	if !ok {
+		return nil, Record{}, ErrUnreadable
+	}
+	return raw, rec, nil
+}
+
+func (s *Store) decode(st stored, hash string) (Record, bool) {
 	token, err := s.ring.Open(st.Token, hash)
 	if err != nil {
 		return Record{}, false
@@ -286,25 +353,67 @@ func (s *Store) decode(raw []byte, hash string) (Record, bool) {
 	}, true
 }
 
-// save seals the tokens with the hash as aad, so a sealed token copied into
-// another session's value does not open.
+// save writes rec unconditionally; it is for new sessions only. Every later
+// write goes through Modify.
 func (s *Store) save(ctx context.Context, hash string, rec Record) error {
-	exp := s.effectiveExpiry(rec)
-	ttl := exp.Sub(s.now()) + RevokeGrace
+	raw, exp, ttl, err := s.encode(hash, rec)
+	if err != nil {
+		return err
+	}
 	if ttl <= 0 {
 		return s.remove(ctx, hash)
 	}
+	if err := s.kv.Set(ctx, key(hash), raw, ttl); err != nil {
+		return fmt.Errorf("session: save: %w", err)
+	}
+	return s.index(ctx, hash, exp)
+}
+
+// replace writes rec only if the stored value is still old.
+func (s *Store) replace(ctx context.Context, hash string, old []byte, rec Record) (bool, error) {
+	raw, exp, ttl, err := s.encode(hash, rec)
+	if err != nil {
+		return false, err
+	}
+	if ttl <= 0 {
+		return true, s.remove(ctx, hash)
+	}
+	ok, err := s.kv.SetIfEqual(ctx, key(hash), old, raw, ttl)
+	if err != nil {
+		return false, fmt.Errorf("session: save: %w", err)
+	}
+	if !ok {
+		return false, nil
+	}
+	return true, s.index(ctx, hash, exp)
+}
+
+func (s *Store) index(ctx context.Context, hash string, exp time.Time) error {
+	if err := s.kv.ZAdd(ctx, expiryIndex, float64(exp.Unix()), hash); err != nil {
+		return fmt.Errorf("session: index: %w", err)
+	}
+	return nil
+}
+
+// encode seals the tokens with the hash as aad, so a sealed token copied into
+// another session's value does not open.
+func (s *Store) encode(hash string, rec Record) (raw []byte, exp time.Time, ttl time.Duration, err error) {
+	exp = s.effectiveExpiry(rec)
+	ttl = exp.Sub(s.now()) + RevokeGrace
+	if ttl <= 0 {
+		return nil, exp, ttl, nil
+	}
 	token, err := s.ring.Seal([]byte(rec.Token), hash)
 	if err != nil {
-		return fmt.Errorf("session: seal: %w", err)
+		return nil, exp, ttl, fmt.Errorf("session: seal: %w", err)
 	}
 	var refresh string
 	if rec.RefreshToken != "" {
 		if refresh, err = s.ring.Seal([]byte(rec.RefreshToken), hash); err != nil {
-			return fmt.Errorf("session: seal: %w", err)
+			return nil, exp, ttl, fmt.Errorf("session: seal: %w", err)
 		}
 	}
-	raw, err := json.Marshal(stored{
+	raw, err = json.Marshal(stored{
 		UserID:           rec.UserID,
 		Login:            rec.Login,
 		Token:            token,
@@ -317,15 +426,9 @@ func (s *Store) save(ctx context.Context, hash string, rec Record) error {
 		VerifiedAt:       rec.VerifiedAt,
 	})
 	if err != nil {
-		return fmt.Errorf("session: encode: %w", err)
+		return nil, exp, ttl, fmt.Errorf("session: encode: %w", err)
 	}
-	if err := s.kv.Set(ctx, key(hash), raw, ttl); err != nil {
-		return fmt.Errorf("session: save: %w", err)
-	}
-	if err := s.kv.ZAdd(ctx, expiryIndex, float64(exp.Unix()), hash); err != nil {
-		return fmt.Errorf("session: index: %w", err)
-	}
-	return nil
+	return raw, exp, ttl, nil
 }
 
 func (s *Store) remove(ctx context.Context, hash string) error {
