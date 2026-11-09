@@ -14,8 +14,8 @@ alone so the record of what passed stays intact.
 | Job | What it proves |
 | --- | --- |
 | **Backend** | `gofmt` clean, `go vet` clean, `go test -race` green |
-| **Redis/Valkey** | the `kv` conformance suite passes against a real Valkey |
-| **Frontend** | the lockfile installs, `vue-tsc` passes, the bundle builds |
+| **Redis/Valkey** | the `kv` conformance suite and the server-mode end-to-end tests pass against a real Valkey with a password, and the binary boots in server mode |
+| **Frontend** | the lockfile installs, `vue-tsc` passes, the unit tests pass, the bundle builds |
 | **Vulnerabilities** | `govulncheck` finds no reachable vulnerability in the standard library or go-redis |
 | **Build and smoke test** | `make build` produces a binary that serves the embedded app correctly |
 | **Kubernetes manifests** | both overlays render, schema-check, and keep their security posture |
@@ -30,19 +30,30 @@ They run in parallel. Nothing depends on anything else.
 the process, guarded by an `RWMutex`, and a lost lock there is exactly the bug a
 serial test run passes.
 
-**Redis/Valkey.** The backend job runs the `kv` conformance suite against the
-in-memory store; this one runs the same suite against a Valkey service
-container, pinned by digest to the same image as `make valkey-up`. Without
-`GHDASH_TEST_REDIS_URL` those tests skip, and a skip is green, so a second step
-fails the job if `TestRedisConformance` did not actually run. The service has no
-password: it lives for one job on an ephemeral runner. The password path is
-covered locally by `make test-redis`.
+**Redis/Valkey.** The backend job runs the `kv` conformance suite and the
+server-mode end-to-end tests against the in-memory store; this one runs both
+against a real Valkey, pinned by digest to the same image as `make valkey-up`.
+Valkey is started with `docker run` rather than as a service container, because
+a service cannot be given a command line: this one has a random per-run
+password and no persistence, like a real deployment's should. Without
+`GHDASH_TEST_REDIS_URL` the `kv` tests skip and the end-to-end tests fall back
+to memory, and both are green, so a step fails the job unless
+`TestRedisConformance` passed and the end-to-end log says `e2e store: redis`.
+Then `scripts/smoke-server-mode.sh` boots the binary in server mode against the
+same Valkey and checks, over HTTP, that a half-configured start and a wrong
+Redis password both refuse to start, that sign-in redirects to GitHub, that the
+local-only routes are gone, and that `/api/ready` answers `503` within its one
+second while Valkey is paused and recovers afterwards, while `/api/health`
+stays `200`.
 
 **Frontend.** `npm ci` rather than `npm install`, so a `package.json` that has
 drifted from the lockfile fails here instead of in the image build. The type
 check runs as its own step even though `npm run build` type-checks first,
 because it is where a locale key added to `en.ts` and not `ja.ts` fails, and
 that deserves to report as a type error. See [i18n](low-level-design/i18n.md).
+The unit tests (`npm test`, vitest) cover the sign-in logic that has no server
+to lean on: when to renew through GitHub, when to stop and offer a way out, and
+reading `?authError=` off the address bar.
 
 **Vulnerabilities.** This scans the standard library at the toolchain pinned
 in `go.mod`, and go-redis, the one third-party module, which holds the session
@@ -100,7 +111,7 @@ make valkey-up && make test-redis && make valkey-down   # the Redis/Valkey job
 `govulncheck` or the smoke tests; those are:
 
 ```sh
-cd backend && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+cd backend && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 ```
 
 ## Pinned versions
@@ -112,12 +123,14 @@ it meant last week.
 | --- | --- | --- |
 | Go | from `backend/go.mod` | the `toolchain` line is the single pin |
 | Node | 24 | matching the Dockerfile's builder |
-| govulncheck | `v1.1.4` | workflow |
+| govulncheck | `v1.9.0` | workflow |
 | kustomize | `v5.4.3` | workflow |
 | kubeconform | `v0.6.7` | workflow, `-kubernetes-version 1.33.0` |
-| Valkey | `9.1.3-alpine`, by digest | workflow service and `VALKEY_IMAGE` in the Makefile |
+| Valkey | `9.1.3-alpine`, by digest | workflow and `VALKEY_IMAGE` in the Makefile |
+| vitest | `5.0.5` | `frontend/package-lock.json` |
+| Actions | by commit SHA, version in a trailing comment | workflow |
 
-[Dependabot](../../.github/dependabot.yml) moves the action versions weekly, the
+[Dependabot](../../.github/dependabot.yml) moves the action pins weekly, the
 Dockerfile's base image digests weekly, and the frontend packages monthly as one
 grouped pull request. The `gomod` entry moves go-redis weekly; the Go
 toolchain itself is still moved by hand.

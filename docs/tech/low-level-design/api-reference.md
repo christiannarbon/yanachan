@@ -217,8 +217,15 @@ nothing is written to disk.
 
 - The local-only routes (`gh-cli/approve`, `env-token/approve`, `device/start`,
   `device/poll`) are not registered and answer the JSON 404.
-- Every other route, `GET /api/settings` included, needs the session cookie and
-  answers `401` without one.
+- `/api/settings`, `/api/suggestions`, `/api/board` and `/api/stats` need the
+  session cookie and answer `401` without one. Status, login, callback,
+  logout, health and ready do not.
+- A failure to read or write settings in Redis answers a fixed message; the
+  detail, which can name internal addresses, goes to the log only.
+- A `401` from GitHub ends the session only if the token it refused is still
+  the session's. A request that started before the session was re-authorised
+  answers `503 {"error": "the sign-in was renewed while this request ran; try again"}`
+  and leaves the session alone.
 
 ### `GET /api/auth/status`
 
@@ -243,16 +250,20 @@ nothing is written to disk.
 
 A browser navigation, never a fetch. Sets a short-lived sealed cookie holding
 the state and PKCE verifier, then `302` to GitHub's authorize page. An optional
-`return` path (`^/[A-Za-z0-9/_-]*$`, not starting with `//`) is where the
-browser lands afterwards; anything else lands on `/`.
+`return` path (`^/[A-Za-z0-9/_-]*$`, not starting with `//`, and not `/api` or
+under it, which would send the browser back into sign-in) is where the browser
+lands afterwards; anything else lands on `/`.
 
 ### `GET /api/auth/callback`
 
 Where GitHub sends the browser back, with `code` and `state`, or with `error`
-when the user cancelled. Checks the state, exchanges the code,
-creates the session cookie (or, for the same user, swaps the token in the
-existing session and revokes the old one — this is how an OAuth App token is
-rotated, and the session ID does not change) and `302`s to the return path.
+and `state` when the user cancelled. The state is checked first, even before
+an `error` is honoured, so another site cannot cancel a sign-in in progress by
+navigating here. Then it exchanges the code, creates the session cookie (or,
+for the same user, puts the new token into the existing session and revokes
+whatever token it held — this is how an OAuth App token is renewed, and the
+session ID does not change) and `302`s to the return path. A token that cannot
+be stored is revoked before the redirect.
 Every failure is a `302` to `/?authError=<code>`:
 
 | Code | Meaning |

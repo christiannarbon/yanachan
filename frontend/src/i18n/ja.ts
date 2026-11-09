@@ -219,6 +219,9 @@ const ja: Messages = {
       'この GitHub アカウントではダッシュボードを利用できません。どの Organization に所属する必要があるか、管理者に確認してください。',
     errServer: 'サインイン中に問題が発生しました。もう一度お試しください。',
     reauthPending: 'GitHub のサインインを更新しています…',
+    reauthStuck: 'GitHub のサインインを更新できませんでした。',
+    reauthStuckHint: 'もう一度更新するか、サインアウトしてください。',
+    reauthRetry: 'サインインを更新',
   },
 
   settings: {

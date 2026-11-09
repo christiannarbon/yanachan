@@ -273,19 +273,17 @@ func TestTouchWritesAtMostOncePerMinute(t *testing.T) {
 	}
 }
 
-func TestUpdateKeepsCreatedAt(t *testing.T) {
+func TestModifyKeepsCreatedAt(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	id := mustCreate(t, f.s, sampleRecord())
 	created := f.c.t
 
-	rec, err := f.s.Get(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.CreatedAt = created.Add(12 * time.Hour)
-	rec.Token = "gho_rotated"
-	if err := f.s.Update(ctx, id, rec); err != nil {
+	if _, err := f.s.Modify(ctx, id, func(r *Record) error {
+		r.CreatedAt = created.Add(12 * time.Hour)
+		r.Token = "gho_rotated"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := f.s.Get(ctx, id)
@@ -296,18 +294,19 @@ func TestUpdateKeepsCreatedAt(t *testing.T) {
 		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, created)
 	}
 	if got.Token != "gho_rotated" {
-		t.Fatal("Update did not store the new token")
+		t.Fatal("Modify did not store the new token")
 	}
 }
 
-func TestUpdateMissing(t *testing.T) {
+func TestModifyMissing(t *testing.T) {
 	f := newFixture(t)
 	id, err := newID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.Update(context.Background(), id, sampleRecord()); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Update(missing) err = %v, want ErrNotFound", err)
+	_, err = f.s.Modify(context.Background(), id, func(*Record) error { return nil })
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Modify(missing) err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -381,8 +380,8 @@ func TestInvalidIDsNeverReachTheStore(t *testing.T) {
 			if err := s.Touch(ctx, tc.id); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("Touch err = %v, want ErrNotFound", err)
 			}
-			if err := s.Update(ctx, tc.id, sampleRecord()); !errors.Is(err, ErrNotFound) {
-				t.Fatalf("Update err = %v, want ErrNotFound", err)
+			if _, err := s.Modify(ctx, tc.id, func(*Record) error { return nil }); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("Modify err = %v, want ErrNotFound", err)
 			}
 			if err := s.Delete(ctx, tc.id); err != nil {
 				t.Fatalf("Delete err = %v, want nil", err)
@@ -406,6 +405,149 @@ func TestKeyRotatedOutMeansSignedOut(t *testing.T) {
 	}
 	if _, err := newStore(mem, newRing(t, k2), c).Get(ctx, id); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get with [k2] err = %v, want ErrNotFound", err)
+	}
+}
+
+// A replica without the key that sealed a session must not delete it: during
+// a rolling key rotation the replicas with the new key still need it.
+func TestUnreadableSessionIsLeftAlone(t *testing.T) {
+	c := &clock{t: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)}
+	mem := kv.NewMemory(c.now)
+	ctx := context.Background()
+	k1, k2 := newKey(t), newKey(t)
+
+	id := mustCreate(t, newStore(mem, newRing(t, k2, k1), c), sampleRecord())
+	old := newStore(mem, newRing(t, k1), c)
+	if _, err := old.Get(ctx, id); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("Get on a replica without the key: err = %v, want ErrUnreadable", err)
+	}
+	if _, err := old.LoadForRevocation(ctx, KeyHash(id)); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("LoadForRevocation err = %v, want ErrUnreadable", err)
+	}
+	if err := old.Touch(ctx, id); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("Touch err = %v, want ErrUnreadable", err)
+	}
+	got, err := newStore(mem, newRing(t, k2, k1), c).Get(ctx, id)
+	if err != nil {
+		t.Fatalf("the session is gone for the replica that has the key: %v", err)
+	}
+	if got.Token != sampleRecord().Token {
+		t.Fatal("token changed")
+	}
+}
+
+func TestCorruptValueIsRemoved(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := mustCreate(t, f.s, sampleRecord())
+	if err := f.mem.Set(ctx, "session:"+KeyHash(id), []byte("{not json"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.Get(ctx, id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get err = %v, want ErrNotFound", err)
+	}
+	if _, err := f.mem.Get(ctx, "session:"+KeyHash(id)); !errors.Is(err, kv.ErrNotFound) {
+		t.Fatalf("corrupt value still stored: %v", err)
+	}
+}
+
+// Touch and Modify change only what their function changes: a token rotated
+// by another writer between their read and write survives.
+func TestModifyDoesNotClobberAConcurrentWrite(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := mustCreate(t, f.s, sampleRecord())
+	f.c.t = f.c.t.Add(2 * time.Minute)
+
+	first := true
+	rec, err := f.s.Modify(ctx, id, func(r *Record) error {
+		if first {
+			first = false
+			// Another replica rotates the token after this read.
+			if _, err := f.s.Modify(ctx, id, func(o *Record) error {
+				o.Token = "gho_rotated_elsewhere"
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.LastSeenAt = f.c.t
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Token != "gho_rotated_elsewhere" {
+		t.Fatal("Modify returned a record with the stale token")
+	}
+	got, err := f.s.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Token != "gho_rotated_elsewhere" || !got.LastSeenAt.Equal(f.c.t) {
+		t.Fatal("a concurrent token rotation was overwritten, or the change was lost")
+	}
+}
+
+func TestModifyGivesUpOnEndlessConflict(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := mustCreate(t, f.s, sampleRecord())
+	n := 0
+	_, err := f.s.Modify(ctx, id, func(r *Record) error {
+		n++
+		if _, err := f.s.Modify(ctx, id, func(o *Record) error {
+			o.Login = fmt.Sprintf("other-%d", n)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		r.Token = "mine"
+		return nil
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	if n != modifyAttempts {
+		t.Fatalf("attempts = %d, want %d", n, modifyAttempts)
+	}
+}
+
+func TestModifySkip(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := mustCreate(t, f.s, sampleRecord())
+	before, _ := f.mem.Get(ctx, "session:"+KeyHash(id))
+	if _, err := f.s.Modify(ctx, id, func(*Record) error { return ErrSkip }); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := f.mem.Get(ctx, "session:"+KeyHash(id))
+	if string(before) != string(after) {
+		t.Fatal("ErrSkip still wrote the session")
+	}
+}
+
+func TestDeleteIf(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := mustCreate(t, f.s, sampleRecord())
+
+	_, ended, err := f.s.DeleteIf(ctx, id, func(r Record) bool { return r.Token == "gho_someone_else" })
+	if err != nil || ended {
+		t.Fatalf("DeleteIf(no match) = %v, %v", ended, err)
+	}
+	if _, err := f.s.Get(ctx, id); err != nil {
+		t.Fatal("session deleted without a match")
+	}
+	rec, ended, err := f.s.DeleteIf(ctx, id, func(r Record) bool { return r.Token == sampleRecord().Token })
+	if err != nil || !ended || rec.Token != sampleRecord().Token {
+		t.Fatalf("DeleteIf(match) = %v, %v", ended, err)
+	}
+	if _, err := f.s.Get(ctx, id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("session survived: %v", err)
+	}
+	if got := indexed(t, f.mem, f.c.t.Add(testMax)); len(got) != 0 {
+		t.Fatal("index entry survived")
 	}
 }
 

@@ -54,9 +54,10 @@ func loadSession(t *testing.T, sa *serverAuth, sid string) session.Record {
 
 func editSession(t *testing.T, sa *serverAuth, sid string, change func(*session.Record)) {
 	t.Helper()
-	rec := loadSession(t, sa, sid)
-	change(&rec)
-	if err := sa.sessions.Update(context.Background(), sid, rec); err != nil {
+	if _, err := sa.sessions.Modify(context.Background(), sid, func(r *session.Record) error {
+		change(r)
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

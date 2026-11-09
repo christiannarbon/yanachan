@@ -17,7 +17,7 @@ const (
 	reapLockTTL = 4 * time.Minute
 	reapBatch   = 100
 	reaperLock  = "lock:reaper"
-	// reapMargin is how much of the lock must be left to start another batch.
+	// reapMargin is how much of the lock must be left to reap another session.
 	reapMargin    = 30 * time.Second
 	revokeTimeout = 10 * time.Second
 )
@@ -59,17 +59,39 @@ func (a *serverAuth) reapOnce(ctx context.Context) (int, error) {
 	defer a.kv.DeleteIfEqual(context.WithoutCancel(ctx), reaperLock, []byte(owner))
 
 	deadline := a.now().Add(reapLockTTL - reapMargin)
+	ended, err := a.reapSessions(ctx, deadline)
+	if err != nil {
+		return ended, err
+	}
+	if _, err := a.retryRevocations(ctx, deadline); err != nil {
+		return ended, err
+	}
+	return ended, nil
+}
+
+// reapSessions checks the deadline before every session, not every batch: a
+// batch of slow revocations could otherwise outlive the lock and let a second
+// replica reap the same sessions.
+func (a *serverAuth) reapSessions(ctx context.Context, deadline time.Time) (int, error) {
 	ended := 0
 	for {
 		hashes, err := a.sessions.Expired(ctx, a.now(), reapBatch)
 		if err != nil {
 			return ended, err
 		}
+		skipped := 0
 		for _, h := range hashes {
 			if err := ctx.Err(); err != nil {
 				return ended, err
 			}
+			if !a.now().Before(deadline) {
+				return ended, nil
+			}
 			done, err := a.reap(ctx, h)
+			if errors.Is(err, session.ErrUnreadable) {
+				skipped++
+				continue
+			}
 			if err != nil {
 				return ended, err
 			}
@@ -77,28 +99,28 @@ func (a *serverAuth) reapOnce(ctx context.Context) (int, error) {
 				ended++
 			}
 		}
-		if len(hashes) < reapBatch || !a.now().Before(deadline) {
+		// Only unreadable sessions left: the next query would return them
+		// again, so stop until a replica with their key comes along.
+		if len(hashes) < reapBatch || skipped == len(hashes) {
 			return ended, nil
 		}
 	}
 }
 
 // reap revokes and deletes one expired session. A failed revocation does not
-// keep the session alive.
+// keep the session alive; the token goes to the retry queue instead.
 func (a *serverAuth) reap(ctx context.Context, hash string) (bool, error) {
 	rec, err := a.sessions.LoadForRevocation(ctx, hash)
+	if errors.Is(err, session.ErrUnreadable) {
+		return false, err
+	}
 	if errors.Is(err, session.ErrNotFound) {
 		return false, a.sessions.DeleteHash(ctx, hash)
 	}
 	if err != nil {
 		return false, err
 	}
-	rctx, cancel := context.WithTimeout(ctx, revokeTimeout)
-	err = a.web.Revoke(rctx, a.cfg.RESTEndpoint, rec.Token)
-	cancel()
-	if err != nil {
-		log.Printf("token revocation failed for %s (%d): %v", rec.Login, rec.UserID, err)
-	}
+	a.revoke(rec.Token, rec.Login)
 	if err := a.sessions.DeleteHash(ctx, hash); err != nil {
 		return false, err
 	}

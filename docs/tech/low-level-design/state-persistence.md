@@ -98,7 +98,7 @@ directory and the state directory empty.
 
 | Key | Value | TTL |
 | --- | --- | --- |
-| `session:<hex sha256(session id)>` | JSON record, tokens sealed | effective expiry + `RevokeGrace` (1h) |
+| `session:<hex sha256(session id)>` | JSON record, tokens sealed | effective expiry + `RevokeGrace` (24h) |
 | `session-expiry` (sorted set) | member = the hex hash, score = effective expiry in unix seconds | none |
 
 Both sit under `GHDASH_REDIS_PREFIX`.
@@ -111,18 +111,33 @@ before it is hashed, so a garbage cookie costs no round-trip.
 
 **The tokens are sealed.** The access and refresh tokens are sealed with the
 [`GHDASH_SESSION_KEYS`](configuration-reference.md) keyring, AES-256-GCM, using
-the hex hash as the additional data, so a sealed token copied into another session's value does not open. A
-value that does not open — its key was dropped from the ring, or it was
-tampered with — is deleted and treated as not found: the user signs in again.
+the hex hash as the additional data, so a sealed token copied into another
+session's value does not open.
+
+A value that does not open is treated as not found but **left in place**. Its
+key may be on another replica — during a rolling key rotation the new pods seal
+with a key the old pods do not have yet — and that replica can still use the
+session and, later, revoke its token. The TTL removes it in the end. A value
+that is not even JSON is deleted: nothing can ever read it.
 
 **Effective expiry** is `min(LastSeenAt + idle, CreatedAt + max)`. Past it, a
 session is not found, whatever the TTL says. The key is not deleted at that
-point: the reaper still needs the token to revoke it at GitHub. Updating a
+point: the reaper still needs the token to revoke it at GitHub. Changing a
 session always keeps the stored `CreatedAt`, so nothing can carry it past the
 maximum age.
 
-**The TTL** on every write is the effective expiry plus an hour of grace. It is
-the backstop that removes the key even if the reaper never runs. A write whose
+**Every change is a compare-and-set.** After `Create`, nothing rewrites a
+session blindly. `Modify` reads the stored value, applies a change to the
+fields that writer owns — `LastSeenAt` for a touch, `VerifiedAt` for the access
+re-check, the token fields for a rotation — and writes back only if the value is
+still the one it read (`SetIfEqual`, a script in Redis). If another replica
+wrote in between, it re-reads and applies the change again, up to five times.
+So a touch can never put back a token that a rotation on another replica has
+just replaced.
+
+**The TTL** on every write is the effective expiry plus a day of grace. It is
+the backstop that removes the key even if the reaper never runs, and long
+enough that a reaper outage of a few hours still finds every token to revoke. A write whose
 TTL would already be zero deletes the session instead.
 
 **The `session-expiry` index** is updated on every write and cleared on every
@@ -146,10 +161,18 @@ it; a token is also renewed five minutes before GitHub's own expiry.
   replica at a time holds `lock:refresh:<hex sha256(session id)>` (30s TTL);
   the others wait up to two seconds for the new token, then use the current
   one if it is still valid. GitHub rotates the refresh token on every refresh.
-- **OAuth App** (no refresh token): nothing can be refreshed, so API calls
-  that need GitHub answer `401 {"reauth": true}`. Settings stay readable. The
-  next sign-in on that browser replaces the token in the same session and
-  revokes the old one; the session ID does not change.
+- **OAuth App** (no refresh token): nothing can be refreshed. The first
+  request after the maximum age **retires** the token: it is removed from the
+  session and revoked at GitHub at once, so it does not stay valid while the
+  user is away. API calls that need GitHub then answer `401 {"reauth": true}`;
+  settings stay readable. The next sign-in on that browser puts a new token
+  into the same session; the session ID does not change.
+
+A refresh and its save run to completion even if the request that started them
+is cancelled: GitHub spends the old refresh token the moment it answers, so a
+refresh that is not saved would end the session. If a sign-in replaced the
+token while the refresh ran, the sign-in's token wins and the refreshed one is
+revoked.
 
 | Key | Value | TTL |
 | --- | --- | --- |
@@ -159,7 +182,21 @@ A session ends — deleted, and its token revoked at GitHub — when a refresh i
 refused, the refresh token has expired, GitHub answers a request with 401 (the
 app was revoked, or the token was dropped), another user signs in on the same
 browser, access is withdrawn, or the user signs out. Sign-out also expires both
-cookies. Revocation is best effort and never blocks the sign-out.
+cookies.
+
+When GitHub refuses a token with 401, the session ends only if that token is
+still the session's own. A request that started before a re-authorisation and
+fails with the old token leaves the renewed session alone and answers `503`
+("try again").
+
+**Revocation never blocks, and is never forgotten.** If GitHub cannot be
+reached, the token is sealed into a retry queue and the reaper tries again with
+backoff: 5 minutes, doubling to at most 6 hours, 8 attempts in all.
+
+| Key | Value | TTL |
+| --- | --- | --- |
+| `revoke:<random id>` | JSON: the token sealed with the key name as aad, the login, the attempt count | 7 days |
+| `revoke-queue` (sorted set) | member = the random id, score = when to try next | none |
 
 ## Server mode: the reaper
 
@@ -169,14 +206,17 @@ Every replica runs a reaper every five minutes. One at a time takes
 `lock:reaper`; the others skip that round. The holder reads `session-expiry` for
 sessions past their effective expiry, oldest first, 100 at a time, and for each
 one revokes the token at GitHub and deletes the key and its index entry. A
-failed revocation is logged and the session is deleted anyway.
+failed revocation goes to the retry queue, and the session is deleted anyway.
+The deadline is checked before every session, so a slow batch cannot outlive
+the lock. Sessions this replica cannot open are skipped and left for one that
+can. The same pass then works through the due entries of the retry queue.
 
 | Key | Value | TTL |
 | --- | --- | --- |
 | `lock:reaper` | random owner string | 4m |
 
-If no reaper runs, the key's TTL still removes the session an hour after its
-expiry; its token is then only invalidated by GitHub or by the user.
+If no reaper runs for a whole day, the key's TTL removes the session and its
+token is then only invalidated by GitHub or by the user.
 
 ## Server mode: settings
 

@@ -3,7 +3,7 @@ import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from '../i18n'
 import Msg from '../i18n/Msg.vue'
 import { api } from '../lib/api'
-import type { AuthErrorCode } from '../lib/authError'
+import { authErrorKey, type AuthErrorCode } from '../lib/authError'
 import type { AuthStatus, DeviceStart } from '../lib/types'
 import CornerControls from './CornerControls.vue'
 
@@ -133,20 +133,8 @@ const leaving = ref(false)
 
 /** Held as a code, not a sentence, so it follows a language switch. */
 const authErrorText = computed(() => {
-  switch (props.authError) {
-    case 'denied':
-      return t.value.auth.errDenied
-    case 'state':
-      return t.value.auth.errState
-    case 'exchange':
-      return t.value.auth.errExchange
-    case 'not_allowed':
-      return t.value.auth.errNotAllowed
-    case 'server':
-      return t.value.auth.errServer
-    default:
-      return ''
-  }
+  const key = authErrorKey(props.authError ?? '')
+  return key ? t.value.auth[key] : ''
 })
 
 /** A navigation, not a fetch: GitHub's redirect must happen in the top-level

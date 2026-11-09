@@ -39,6 +39,19 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 end
 return 0`)
 
+// setIfEqual is the compare-and-set counterpart. ARGV[3] is the TTL in
+// milliseconds; 0 means no expiry, as for Set.
+var setIfEqual = redis.NewScript(`
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+if tonumber(ARGV[3]) > 0 then
+  redis.call("SET", KEYS[1], ARGV[2], "PX", ARGV[3])
+else
+  redis.call("SET", KEYS[1], ARGV[2])
+end
+return 1`)
+
 // NewRedis connects and pings once with ctx, so a misconfigured server fails
 // at startup rather than on the first login. No error it returns contains the
 // URL: it can carry a username, and a mistyped one a password.
@@ -79,6 +92,10 @@ func NewRedis(ctx context.Context, opts RedisOptions) (*Redis, error) {
 	o.DialTimeout = 5 * time.Second
 	o.ReadTimeout = 2 * time.Second
 	o.WriteTimeout = 2 * time.Second
+	// Without this go-redis ignores a context's deadline on the socket and
+	// waits out ReadTimeout instead, so the readiness probe's one second and
+	// every request's own deadline would not hold.
+	o.ContextTimeoutEnabled = true
 
 	r := &Redis{c: redis.NewClient(o), prefix: opts.Prefix}
 	if err := r.c.Ping(ctx).Err(); err != nil {
@@ -122,6 +139,14 @@ func (r *Redis) DeleteIfEqual(ctx context.Context, key string, val []byte) (bool
 	n, err := deleteIfEqual.Run(ctx, r.c, []string{r.k(key)}, val).Int64()
 	if err != nil {
 		return false, fmt.Errorf("kv: delete if equal: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (r *Redis) SetIfEqual(ctx context.Context, key string, old, val []byte, ttl time.Duration) (bool, error) {
+	n, err := setIfEqual.Run(ctx, r.c, []string{r.k(key)}, old, val, ttl.Milliseconds()).Int64()
+	if err != nil {
+		return false, fmt.Errorf("kv: set if equal: %w", err)
 	}
 	return n == 1, nil
 }

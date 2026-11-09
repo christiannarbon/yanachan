@@ -54,6 +54,7 @@ func Run(t *testing.T, newStore func(t *testing.T) kv.Store, clock Clock) {
 		{"SetWithoutTTLClearsExpiry", s.setWithoutTTLClearsExpiry},
 		{"SetNX", s.setNX},
 		{"DeleteIfEqual", s.deleteIfEqual},
+		{"SetIfEqual", s.setIfEqual},
 		{"DeleteManyAndMissing", s.deleteManyAndMissing},
 		{"Expire", s.expire},
 		{"ZSet", s.zset},
@@ -261,4 +262,30 @@ func (s *suite) ping(t *testing.T, st kv.Store, _ func(string) string) {
 	if err := st.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (s *suite) setIfEqual(t *testing.T, st kv.Store, key func(string) string) {
+	ctx := context.Background()
+	mustSet(t, st, key("k"), "v1", 0)
+	ok, err := st.SetIfEqual(ctx, key("k"), []byte("other"), []byte("v2"), 0)
+	if err != nil || ok {
+		t.Fatalf("SetIfEqual(wrong) = %v, %v; want false, nil", ok, err)
+	}
+	if got := mustGet(t, st, key("k")); !bytes.Equal(got, []byte("v1")) {
+		t.Fatalf("value after a failed SetIfEqual = %q, want v1", got)
+	}
+	ok, err = st.SetIfEqual(ctx, key("k"), []byte("v1"), []byte("v2"), ttl)
+	if err != nil || !ok {
+		t.Fatalf("SetIfEqual(right) = %v, %v; want true, nil", ok, err)
+	}
+	if got := mustGet(t, st, key("k")); !bytes.Equal(got, []byte("v2")) {
+		t.Fatalf("value = %q, want v2", got)
+	}
+	s.advance(ttl + 200*time.Millisecond)
+	wantMissing(t, st, key("k"))
+	ok, err = st.SetIfEqual(ctx, key("k"), []byte("v2"), []byte("v3"), 0)
+	if err != nil || ok {
+		t.Fatalf("SetIfEqual(missing) = %v, %v; want false, nil", ok, err)
+	}
+	wantMissing(t, st, key("k"))
 }

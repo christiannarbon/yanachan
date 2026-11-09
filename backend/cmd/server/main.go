@@ -56,17 +56,26 @@ func main() {
 	}
 	defer apiSrv.Close()
 
+	// The reaper must be finished before Close shuts the store under it.
 	stopReaper := func() {}
 	if cfg.AuthMode == config.AuthServer {
-		var reapCtx context.Context
-		reapCtx, stopReaper = context.WithCancel(context.Background())
-		go apiSrv.RunReaper(reapCtx)
+		reapCtx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			apiSrv.RunReaper(reapCtx)
+		}()
+		stopReaper = func() {
+			cancel()
+			<-done
+		}
 	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           apiSrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      90 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -89,13 +98,13 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Printf("shutting down")
-	stopReaper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+	stopReaper()
 }
 
 // redisHost is the host:port of a redis URL, without any username.

@@ -10,10 +10,11 @@ Every key sits under `GHDASH_REDIS_PREFIX` (default `yana:`).
 
 | Key | Holds | Expires |
 | --- | --- | --- |
-| `session:<hash>` | One sign-in: login, GitHub user ID, timestamps, and the GitHub tokens **sealed** with `GHDASH_SESSION_KEYS` | With the session, plus an hour so its token can be revoked |
+| `session:<hash>` | One sign-in: login, GitHub user ID, timestamps, and the GitHub tokens **sealed** with `GHDASH_SESSION_KEYS` | With the session, plus a day so its token can be revoked |
 | `session-expiry` | When each session expires, so expired ones can be found and revoked | Never; entries are removed with their session |
 | `user:<github user id>:settings` | The teams, orgs and view options that user follows. No secret | Never |
 | `lock:refresh:<hash>`, `lock:reaper` | Short locks so only one replica refreshes a token or revokes expired sessions at a time | 30 seconds, 4 minutes |
+| `revoke:<id>`, `revoke-queue` | Tokens GitHub could not revoke yet, **sealed**, waiting for a retry | 7 days at most |
 
 `<hash>` is the SHA-256 of the session cookie's value. The cookie itself is
 never stored, and no token is stored in a form that opens without the session
@@ -43,6 +44,10 @@ keys. Details: [state persistence](../tech/low-level-design/state-persistence.md
       GHDASH_REDIS_URL=rediss://yana@<redis-host>:6378/0
       GHDASH_REDIS_PASSWORD=<password>
       ```
+
+      Tested on Valkey 9.1. `client|setinfo` exists from Redis 7.2; on older
+      Redis leave it out (the client treats it as optional). Add `+select` if
+      the URL names a database other than `/0`.
 
       To keep the password off a command line, put the same `user` line in an
       ACL file and start the server with `--aclfile`.

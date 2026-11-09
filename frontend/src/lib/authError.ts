@@ -13,3 +13,23 @@ export function takeAuthError(): AuthErrorCode | '' {
   history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash)
   return (CODES as string[]).includes(raw) ? (raw as AuthErrorCode) : 'server'
 }
+
+/** The i18n key under `auth` that explains a code. */
+export function authErrorKey(
+  code: AuthErrorCode | '',
+): 'errDenied' | 'errState' | 'errExchange' | 'errNotAllowed' | 'errServer' | '' {
+  switch (code) {
+    case 'denied':
+      return 'errDenied'
+    case 'state':
+      return 'errState'
+    case 'exchange':
+      return 'errExchange'
+    case 'not_allowed':
+      return 'errNotAllowed'
+    case 'server':
+      return 'errServer'
+    default:
+      return ''
+  }
+}

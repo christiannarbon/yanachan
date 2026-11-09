@@ -70,7 +70,7 @@ export GITHUB_CLIENT_SECRET=<client-secret>
 docker network create yana
 docker run -d --rm --name yana-valkey --network yana \
   valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b \
-  valkey-server --requirepass "$GHDASH_REDIS_PASSWORD"
+  valkey-server --requirepass "$GHDASH_REDIS_PASSWORD" --save "" --appendonly no
 docker run --rm --network yana -p 127.0.0.1:19080:19080 \
   -e GHDASH_AUTH_MODE=server \
   -e GITHUB_CLIENT_ID=<client-id> -e GITHUB_CLIENT_SECRET \
@@ -96,8 +96,9 @@ GitHub must match the host the sign-in started on. The GitHub side is in
 - Server mode writes nothing to disk. The image declares a `/data` volume
   for local mode, so Docker still creates an anonymous one; it stays empty,
   and `--rm` removes it with the container.
-- This Valkey has no persistence: restarting it signs everyone out and
-  resets their settings.
+- `--save "" --appendonly no` turns persistence off; the image snapshots to
+  `/data` by default. Without persistence, restarting Valkey signs everyone
+  out and resets their settings.
 
 Stop both with `docker stop yana-valkey` and Ctrl-C, then
 `docker network rm yana`.

@@ -100,7 +100,7 @@ func Load() Config {
 	c.PublicURL = strings.TrimRight(env("GHDASH_PUBLIC_URL", ""), "/")
 	c.AllowedOrgs = envList("GHDASH_ALLOWED_ORGS")
 	c.AllowedUsers = envList("GHDASH_ALLOWED_USERS")
-	c.AllowAnyUser = envBool("GHDASH_ALLOW_ANY_USER", false)
+	c.AllowAnyUser = c.parseBool("GHDASH_ALLOW_ANY_USER", false)
 	c.RESTEndpoint = env("GHDASH_REST_ENDPOINT", "https://api.github.com")
 	c.SessionKeys = c.parseKeys(os.Getenv("GHDASH_SESSION_KEYS"))
 	c.SessionIdle = c.parseDuration("GHDASH_SESSION_IDLE", DefaultSessionIdle)
@@ -138,6 +138,21 @@ func (c *Config) parseKeys(raw string) [][]byte {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// parseBool is envBool that reports a value it cannot read instead of
+// quietly using the fallback.
+func (c *Config) parseBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		c.problems = append(c.problems, fmt.Sprintf("%s: %q is not true or false", key, v))
+		return fallback
+	}
+	return b
 }
 
 func (c *Config) parseDuration(key string, fallback time.Duration) time.Duration {
@@ -211,6 +226,14 @@ func (c Config) Validate() error {
 	for i, k := range c.SessionKeys {
 		if len(k) != 32 {
 			add(fmt.Sprintf("GHDASH_SESSION_KEYS entry %d is %d bytes, want 32", i+1, len(k)))
+		}
+	}
+	for _, u := range c.AllowedUsers {
+		// Mirrors access.ParseUserID, which cannot be imported from here.
+		if rest, ok := strings.CutPrefix(u, "id:"); ok {
+			if n, err := strconv.ParseInt(rest, 10, 64); err != nil || n <= 0 {
+				add(fmt.Sprintf("GHDASH_ALLOWED_USERS entry %q must be a login or id:<number>", u))
+			}
 		}
 	}
 	if len(c.AllowedOrgs) == 0 && len(c.AllowedUsers) == 0 && !c.AllowAnyUser {

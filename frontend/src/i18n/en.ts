@@ -254,6 +254,9 @@ const en = {
       'Your GitHub account is not allowed to use this dashboard. Ask whoever runs it which organization you need to belong to.',
     errServer: 'Something went wrong while signing in. Try again.',
     reauthPending: 'Renewing your GitHub sign-in…',
+    reauthStuck: 'Your GitHub sign-in could not be renewed.',
+    reauthStuckHint: 'Renew it again, or sign out.',
+    reauthRetry: 'Renew sign-in',
   },
 
   settings: {

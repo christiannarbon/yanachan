@@ -36,15 +36,15 @@ first screen before it is used.
 | `GHDASH_AUTH_MODE` | `local` | `local` or `server`. Never inferred from other variables; anything else refuses to start |
 | `GITHUB_CLIENT_ID` | *(empty)* | required in server mode. OAuth App or GitHub App client ID |
 | `GITHUB_CLIENT_SECRET` | *(empty)* | required in server mode. Never logged |
-| `GHDASH_PUBLIC_URL` | *(empty)* | required in server mode. The origin users reach, e.g. `https://yana.example.com`: scheme, host and port only. `https` turns on secure cookies |
+| `GHDASH_PUBLIC_URL` | *(empty)* | required in server mode. The origin users reach, e.g. `https://yana.example.com`: scheme, host and port only. `https` turns on secure cookies. Its host joins the `Host` allowlist in server mode only |
 | `GHDASH_SESSION_KEYS` | *(empty)* | required in server mode. Comma-separated standard base64, each exactly 32 bytes. The first seals, all open. `openssl rand -base64 32` |
 | `GHDASH_REDIS_URL` | *(empty)* | required in server mode. `redis://host:6379/0` or `rediss://…`. Must not carry a password; an ACL username is fine |
 | `GHDASH_REDIS_PASSWORD` | *(empty)* | Redis/Valkey password. Never logged |
 | `GHDASH_REDIS_CA_FILE` | *(empty)* | PEM bundle for `rediss://` with a private CA |
 | `GHDASH_REDIS_PREFIX` | `yana:` | prepended to every key, so several installs can share one instance |
 | `GHDASH_ALLOWED_ORGS` | *(empty)* | org logins whose members may sign in |
-| `GHDASH_ALLOWED_USERS` | *(empty)* | individual logins that may sign in |
-| `GHDASH_ALLOW_ANY_USER` | `false` | explicit opt-out of the allowlist. One of these three is required |
+| `GHDASH_ALLOWED_USERS` | *(empty)* | individual users that may sign in: logins, or `id:<n>` for GitHub's numeric user ID, which cannot be renamed and re-registered by someone else |
+| `GHDASH_ALLOW_ANY_USER` | `false` | explicit opt-out of the allowlist. One of these three is required. A value that is not `true` or `false` is a startup error |
 | `GHDASH_SESSION_IDLE` | `168h` | a session ends after this long unused |
 | `GHDASH_SESSION_MAX` | `720h` | a session ends after this long regardless. Must be ≥ idle |
 | `GHDASH_TOKEN_MAX_AGE` | `8h` | how long one GitHub token may serve a session before rotation. Between `15m` and `GHDASH_SESSION_MAX` |

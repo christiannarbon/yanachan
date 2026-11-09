@@ -123,6 +123,7 @@ func newTestKV(t *testing.T, now func() time.Time) kv.Store {
 	}
 	t.Cleanup(func() { r.Close() })
 	t.Cleanup(func() { deletePrefix(t, opts) })
+	t.Log("e2e store: redis")
 	return r
 }
 

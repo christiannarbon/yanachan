@@ -14,8 +14,8 @@ import { useSideNav } from './composables/useSideNav'
 import Msg from './i18n/Msg.vue'
 import { useI18n } from './i18n'
 import { ApiError, api } from './lib/api'
-import { takeAuthError, type AuthErrorCode } from './lib/authError'
-import { reauthenticate } from './lib/reauth'
+import { authErrorKey, takeAuthError, type AuthErrorCode } from './lib/authError'
+import { decideAuthFailure, returnPath } from './lib/reauth'
 import { isLegacySettingsPath } from './lib/routes'
 import type { AuthStatus, Board, Settings, Stats } from './lib/types'
 
@@ -48,6 +48,13 @@ const authError = ref<AuthErrorCode | ''>('')
 /** The page is leaving for GitHub to renew its token, now or once the tab is
  *  visible; nothing else should be fetched meanwhile. */
 const reauthPending = ref(false)
+/** The session needs renewing, but going to GitHub again now would loop:
+ *  the page offers to renew by hand or to sign out instead. */
+const reauthStuck = ref(false)
+const authErrorText = computed(() => {
+  const key = authErrorKey(authError.value)
+  return key ? t.value.auth[key] : ''
+})
 
 let clockTimer: number | undefined
 let refreshTimer: number | undefined
@@ -59,6 +66,7 @@ onMounted(async () => {
   clockTimer = window.setInterval(() => (now.value = Date.now()), 30_000)
   stopRouting = startRouting()
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('pageshow', onPageShow)
   // Settings used to be a page; a bookmark to it opens the dialog instead.
   settingsOpen.value = isLegacySettingsPath(location.pathname)
   // `/`, and anything the app cannot read, become the landing path rather than
@@ -71,8 +79,15 @@ onUnmounted(() => {
   if (clockTimer !== undefined) window.clearInterval(clockTimer)
   if (stopRouting) stopRouting()
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('pageshow', onPageShow)
   stopAutoRefresh()
 })
+
+/** Back from GitHub can restore this page from the back/forward cache with
+ *  "leaving for GitHub" still showing; start over instead. */
+function onPageShow(e: PageTransitionEvent) {
+  if (e.persisted) location.reload()
+}
 
 watch(autoRefresh, (on) => (on ? startAutoRefresh() : stopAutoRefresh()))
 
@@ -103,18 +118,44 @@ async function bootstrap() {
 }
 
 /** The one answer to a 401: renew the token through GitHub when the server
- *  asks for it, otherwise go back to the gate. False when e is not a 401. */
+ *  asks for it, offer a way out when that would loop, otherwise go back to
+ *  the gate. False when e is not a 401. */
 async function handleAuthFailure(e: unknown): Promise<boolean> {
-  if (!(e instanceof ApiError && e.status === 401)) return false
-  if (reauthPending.value) return true
-  const loginUrl = authStatus.value?.loginUrl
-  if (e.reauth && loginUrl && reauthenticate(loginUrl)) {
-    reauthPending.value = true
-    return true
+  const action = decideAuthFailure(e instanceof ApiError ? e : null, {
+    pending: reauthPending.value,
+    loginUrl: authStatus.value?.loginUrl,
+    authError: authError.value,
+  })
+  switch (action) {
+    case 'other':
+      return false
+    case 'pending':
+      return true
+    case 'renew':
+      settingsOpen.value = false
+      reauthPending.value = true
+      return true
+    case 'stuck':
+      settingsOpen.value = false
+      board.value = null
+      reauthStuck.value = true
+      return true
+    case 'gate':
+      settingsOpen.value = false
+      board.value = null
+      try {
+        authStatus.value = await api.authStatus()
+      } catch (err) {
+        error.value = (err as Error).message
+      }
+      return true
   }
-  board.value = null
-  authStatus.value = await api.authStatus()
-  return true
+}
+
+/** Renewal by hand, from the stuck screen: a click is not a loop. */
+function renewNow() {
+  const loginUrl = authStatus.value?.loginUrl ?? '/api/auth/login'
+  window.location.assign(`${loginUrl}?return=${encodeURIComponent(returnPath(location.pathname))}`)
 }
 
 /** Both halves of a refresh go out together: they are separate endpoints, and
@@ -176,7 +217,14 @@ async function onAuthenticated() {
 }
 
 async function onSignOut() {
-  await api.logout()
+  try {
+    await api.logout()
+  } catch (err) {
+    error.value = (err as Error).message
+    return
+  }
+  reauthStuck.value = false
+  authError.value = ''
   board.value = null
   stats.value = null
   settings.value = null
@@ -260,6 +308,15 @@ async function toggleOnlyActive() {
     />
 
     <p v-else-if="reauthPending && !board" class="centered notice">{{ t.auth.reauthPending }}</p>
+
+    <section v-else-if="reauthStuck" class="centered stuck" role="alert">
+      <p class="notice">{{ authErrorText || t.auth.reauthStuck }}</p>
+      <p class="soft">{{ t.auth.reauthStuckHint }}</p>
+      <div class="stuck-actions">
+        <button class="accent" @click="renewNow">{{ t.auth.reauthRetry }}</button>
+        <button class="ghost" @click="onSignOut">{{ t.settings.signOutServer }}</button>
+      </div>
+    </section>
 
     <template v-else-if="board && settings">
       <header class="topbar">
@@ -427,6 +484,7 @@ async function toggleOnlyActive() {
   flex-direction: column;
 }
 .centered { padding: 60px 20px; text-align: center; }
+.stuck-actions { display: flex; gap: 12px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
 .topbar {
   flex: none;
