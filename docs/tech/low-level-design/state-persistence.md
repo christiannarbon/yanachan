@@ -89,8 +89,12 @@ worth making you re-enter.
 
 `backend/internal/session/session.go`
 
-In server mode there is no `session.json`. Each session is one key in
-Redis/Valkey, reached through `kv.Store`, and nothing is written to disk.
+In server mode there is no `session.json` and no `settings.json`. Each session
+is one key in Redis/Valkey, reached through `kv.Store`, and nothing is written
+to disk: `GHDASH_STATE_DIR` is ignored, and a local-mode state directory on the
+same machine is neither read nor changed. `servermode_e2e_test.go` asserts that
+a sign-in, a settings round-trip, a rotation and a sign-out leave the working
+directory and the state directory empty.
 
 | Key | Value | TTL |
 | --- | --- | --- |
@@ -156,6 +160,23 @@ refused, the refresh token has expired, GitHub answers a request with 401 (the
 app was revoked, or the token was dropped), another user signs in on the same
 browser, access is withdrawn, or the user signs out. Sign-out also expires both
 cookies. Revocation is best effort and never blocks the sign-out.
+
+## Server mode: the reaper
+
+`backend/internal/api/reaper.go`
+
+Every replica runs a reaper every five minutes. One at a time takes
+`lock:reaper`; the others skip that round. The holder reads `session-expiry` for
+sessions past their effective expiry, oldest first, 100 at a time, and for each
+one revokes the token at GitHub and deletes the key and its index entry. A
+failed revocation is logged and the session is deleted anyway.
+
+| Key | Value | TTL |
+| --- | --- | --- |
+| `lock:reaper` | random owner string | 4m |
+
+If no reaper runs, the key's TTL still removes the session an hour after its
+expiry; its token is then only invalidated by GitHub or by the user.
 
 ## Server mode: settings
 
