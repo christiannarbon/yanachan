@@ -11,7 +11,8 @@ import (
 // requestAuth resolves who a request acts as. Handlers only ever ask this
 // interface, so no handler can reach for "the" token.
 type requestAuth interface {
-	// Client returns the GitHub client and viewer for r, or errNoSession.
+	// Client returns the GitHub client and viewer for r, or errNoSession,
+	// errReauth (sign in again into the same session) or errUpstream.
 	Client(r *http.Request) (*github.Client, viewer, error)
 	// Settings returns the settings r reads and writes, or errNoSession.
 	Settings(r *http.Request) (settingsStore, error)
@@ -20,6 +21,9 @@ type requestAuth interface {
 type viewer struct {
 	Login string
 	Mode  string // "gh-cli" | "oauth" | "env-token" (local) or "github" (server)
+	// token is the one this request uses, so a refusal from GitHub can be
+	// pinned to it. Server mode only; never serialised.
+	token string
 }
 
 type settingsStore interface {
