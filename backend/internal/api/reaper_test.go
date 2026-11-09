@@ -129,8 +129,11 @@ func TestReaperDeletesEvenIfRevokeFails(t *testing.T) {
 		t.Fatalf("session: %v, want ErrNotFound", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "token revocation failed for alice (1)") {
+	if !strings.Contains(out, "revoke failed: alice") {
 		t.Errorf("log lacks the failure:\n%s", out)
+	}
+	if queued := revokeQueueLen(t, sa); queued != 1 {
+		t.Errorf("revoke queue holds %d, want 1", queued)
 	}
 	if strings.Contains(out, tok) {
 		t.Errorf("log contains the token:\n%s", out)
