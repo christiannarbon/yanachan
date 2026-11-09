@@ -52,9 +52,9 @@ updates:
       # typescript 7 is the Go rewrite, and it dropped the `typescript/lib/tsc`
       # export that vue-tsc resolves to drive the compiler -- so `npm run
       # typecheck` and `npm run build` both die on ERR_PACKAGE_PATH_NOT_EXPORTED
-      # the moment it is installed. No released vue-tsc supports it yet (3.3.11
-      # is the latest, and its peer range of >=5.0.0 is what lets npm install a
-      # 7 that cannot run). Drop this entry once vue-tsc ships TypeScript 7
+      # the moment it is installed. No vue-tsc release supported it when this was
+      # written (3.3.11), and its peer range of >=5.0.0 is what lets npm install
+      # a 7 that cannot run. Drop this entry once vue-tsc ships TypeScript 7
       # support; the major is worth taking then.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
