@@ -119,3 +119,112 @@ a network problem); try again.
 Access is re-checked every 12 hours on an existing session. Someone removed from
 the org keeps working for at most that long, then is signed out and their token
 is revoked. A GitHub outage during the re-check never signs anyone out.
+
+## Server mode refuses to start
+
+The process prints one `config:` line per problem and exits 1. It reports every
+problem at once, never a secret's value.
+
+| Message | Fix |
+| --- | --- |
+| `GHDASH_AUTH_MODE must be "local" or "server"` | A typo in the mode |
+| `GITHUB_CLIENT_ID is required in server mode`, `GITHUB_CLIENT_SECRET is required…` | Set both from your [GitHub app](../../usage/github-app.md) |
+| `GHDASH_PUBLIC_URL is required…`, `…must be an origin such as https://yana.example.com, with no path` | Scheme and host only; no trailing path |
+| `GHDASH_SESSION_KEYS is required…`, `…entry N is not valid base64`, `…entry N is X bytes, want 32` | `openssl rand -base64 32`, comma-separated if more than one |
+| `server mode needs an access policy…` | Set `GHDASH_ALLOWED_ORGS`, `GHDASH_ALLOWED_USERS` or `GHDASH_ALLOW_ANY_USER=true` |
+| `GH_TOKEN, GITHUB_TOKEN and GHDASH_GITHUB_TOKEN must be unset in server mode…` | Unset them; each user signs in with their own account |
+| `GHDASH_SESSION_MAX must not be shorter than GHDASH_SESSION_IDLE` | Raise the maximum or lower the idle time |
+| `GHDASH_TOKEN_MAX_AGE must be between 15m and GHDASH_SESSION_MAX` (or the `OAUTH_APP` / `GITHUB_APP` variants) | Pick an age in range |
+| `GHDASH_SESSION_IDLE: "…" is not a duration such as 168h` | Go durations: `30m`, `8h`, `168h` |
+| `GHDASH_REDIS_URL is required…`, `…must be redis://host:port[/db] or rediss://…` | See [Redis or Valkey](../../usage/redis.md) |
+| `GHDASH_REDIS_URL must not contain a password…` | Move it to `GHDASH_REDIS_PASSWORD`; a username may stay in the URL |
+| `GHDASH_REDIS_CA_FILE needs a rediss:// URL` | A CA only makes sense with TLS |
+
+If the configuration passes, the server pings Redis for up to 10 seconds. A
+failure ends with `server: connect to redis: kv: ping redis at <host:port>: …`:
+
+- `connection refused` or a timeout — wrong host or port, or a network policy
+  in the way.
+- `NOAUTH` or `WRONGPASS` — `GHDASH_REDIS_PASSWORD` is missing or wrong, or the
+  ACL username in the URL is.
+- A certificate error — the server needs `GHDASH_REDIS_CA_FILE`, or the URL
+  should be `rediss://`.
+- `NOPERM` — the ACL user lacks a command; the list is in
+  [Redis hardening](../../usage/redis.md#hardening).
+
+## `authError=state`
+
+The callback arrived without the matching sign-in cookie.
+
+- **The sign-in started on one host and came back on another.** For example
+  `http://127.0.0.1:19080` in the address bar, but `http://localhost:19080` in
+  `GHDASH_PUBLIC_URL` and the app's callback URL. Use the public URL's host.
+- **The browser blocks cookies** for the site.
+- **It took longer than 10 minutes** between clicking *Sign in* and approving on
+  GitHub. Start again.
+
+## `authError=exchange`
+
+GitHub refused to swap the code for a token. The server log has
+`sign-in failed: code exchange: …` with GitHub's reason.
+
+- **Wrong client secret**, or the secret was regenerated on GitHub and not
+  updated here.
+- **Callback URL mismatch.** The app's callback URL on GitHub must be exactly
+  `<GHDASH_PUBLIC_URL>/api/auth/callback`.
+- **Client ID and secret from different apps**, for example the development
+  OAuth App's ID with the production secret.
+
+## `authError=not_allowed`
+
+See [Signed in with GitHub but told *not allowed*](#signed-in-with-github-but-told-not-allowed)
+above. In short: not in an allowed org, an OAuth App the org has not approved,
+or a GitHub App not installed on the org.
+
+## The page flicks to GitHub and back every few hours
+
+Expected, with an OAuth App. Its tokens never expire on their own, so the
+dashboard replaces them every `GHDASH_OAUTH_APP_TOKEN_MAX_AGE` (default `8h`)
+by passing through GitHub, which approves without asking. The session and
+settings are untouched. For fewer redirects, raise
+`GHDASH_OAUTH_APP_TOKEN_MAX_AGE`; the trade-off is in
+[token lifetime](../architecture/security.md#token-lifetime-server-mode).
+
+## It keeps going to GitHub and back
+
+The page goes to GitHub at most once a minute; a second attempt within the
+minute shows the sign-in screen instead. If that screen keeps coming back after
+signing in:
+
+- **Cookies are blocked** for the site, so the session never sticks.
+- **The address bar host differs from `GHDASH_PUBLIC_URL`'s.** The session
+  cookie is set on the public host; a page loaded under another name never sees
+  it.
+
+## Everyone was signed out
+
+- **The session keys changed.** A key removed from `GHDASH_SESSION_KEYS`, or a
+  new key generated on every start, makes every sealed session unreadable.
+  Keep the keys in a Secret and rotate by prepending.
+- **Redis restarted without persistence.** Sessions and settings were only in
+  memory.
+- **`GHDASH_REDIS_PREFIX` changed.** The old sessions are still there, under the
+  old prefix.
+
+## PRs from some orgs are missing
+
+With a GitHub App, the token only sees repositories where the App is installed.
+Install it on that org, or switch to an OAuth App. See
+[which kind of app](../../usage/github-app.md#which-kind-of-app).
+
+## `503` from `/api/ready`
+
+The server cannot reach Redis. Check, in order: `GHDASH_REDIS_URL`,
+`GHDASH_REDIS_PASSWORD`, the TLS CA (`GHDASH_REDIS_CA_FILE`), and any network
+policy between the app and Redis. `/api/health` stays `200` meanwhile, so the
+app is not restarted; it just receives no traffic.
+
+## `403 unrecognised Host header` in server mode
+
+The hostname in the address bar is not `GHDASH_PUBLIC_URL`'s host. Use the
+public URL, or add the other name to `GHDASH_ALLOWED_HOSTS`.
