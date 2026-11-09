@@ -9,7 +9,9 @@ You want the thing on screen, authenticated, showing your pull requests.
 | Guide | What it covers |
 | --- | --- |
 | [Getting started](usage/getting-started.md) | prerequisites, `make deps`, `make run`, the first screen |
-| [Authentication](usage/authentication.md) | the three sign-in paths, where the token lives, signing out |
+| [Authentication](usage/authentication.md) | local and server mode, the sign-in paths, where the token lives, signing out |
+| [OAuth App or GitHub App](usage/github-app.md) | for organisations: registering the app server mode signs people in with |
+| [Redis or Valkey](usage/redis.md) | for organisations: what server mode stores, requirements, hardening |
 | [Your week](usage/weekly-dashboard.md) | the landing tab: the four counts, the calorie figure, reading the chart |
 | [Review queues](usage/review-queues.md) | the queues, the indicators, the activity window |
 | [Settings](usage/settings.md) | teams, organizations, the window override, the state files |
