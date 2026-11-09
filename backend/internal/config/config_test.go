@@ -135,6 +135,8 @@ func TestServerModeProblems(t *testing.T) {
 		{"Redis URL with password", map[string]string{"GHDASH_REDIS_URL": "redis://:pw@x:6379"}, "must not contain a password"},
 		{"CA file without TLS", map[string]string{"GHDASH_REDIS_CA_FILE": "/ca.pem"}, "GHDASH_REDIS_CA_FILE needs a rediss:// URL"},
 		{"unknown mode", map[string]string{"GHDASH_AUTH_MODE": "sever"}, `GHDASH_AUTH_MODE must be "local" or "server"`},
+		{"allow-any not a bool", map[string]string{"GHDASH_ALLOW_ANY_USER": "yes"}, `GHDASH_ALLOW_ANY_USER: "yes" is not true or false`},
+		{"bad user id", map[string]string{"GHDASH_ALLOWED_USERS": "alice,id:abc"}, `entry "id:abc" must be a login or id:<number>`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,6 +274,15 @@ func TestHTTPPublicURLIsNotSecure(t *testing.T) {
 		t.Errorf("PublicHost() = %q", got)
 	}
 	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v", err)
+	}
+}
+
+func TestAllowedUserIDsAccepted(t *testing.T) {
+	validServerEnv(t)
+	t.Setenv("GHDASH_ALLOWED_ORGS", "")
+	t.Setenv("GHDASH_ALLOWED_USERS", "alice,id:583231")
+	if err := Load().Validate(); err != nil {
 		t.Fatalf("Validate() = %v", err)
 	}
 }
