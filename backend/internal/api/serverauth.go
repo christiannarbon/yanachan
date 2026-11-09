@@ -35,7 +35,7 @@ type serverAuth struct {
 	policy   access.Policy
 	// allow decides whether a signed-in GitHub user may use this deployment.
 	// It is policy.Check unless a test swaps it out.
-	allow func(ctx context.Context, cl *github.Client, login string) error
+	allow func(ctx context.Context, cl *github.Client, login string, id int64) error
 	now   func() time.Time
 }
 
@@ -73,8 +73,8 @@ func newServerAuth(cfg config.Config, sessions *session.Store, users *state.User
 		policy: access.PolicyFromConfig(cfg),
 		now:    time.Now,
 	}
-	a.allow = func(ctx context.Context, cl *github.Client, login string) error {
-		return a.policy.Check(ctx, cl, login)
+	a.allow = func(ctx context.Context, cl *github.Client, login string, id int64) error {
+		return a.policy.Check(ctx, cl, login, id)
 	}
 	return a
 }
@@ -117,10 +117,13 @@ type oauthRoundTrip struct {
 
 var returnPathRE = regexp.MustCompile(`^/[A-Za-z0-9/_-]*$`)
 
-// safeReturn keeps only same-site paths, so the callback can never be turned
-// into an open redirect. Anything else lands on "/".
+// safeReturn keeps only same-site page paths, so the callback can never be
+// turned into an open redirect, nor send the browser back into the API (a
+// return to /api/auth/login would loop through GitHub). Anything else lands
+// on "/".
 func safeReturn(p string) string {
-	if !returnPathRE.MatchString(p) || strings.HasPrefix(p, "//") {
+	if !returnPathRE.MatchString(p) || strings.HasPrefix(p, "//") ||
+		p == "/api" || strings.HasPrefix(p, "/api/") {
 		return ""
 	}
 	return p
@@ -157,19 +160,24 @@ func (a *serverAuth) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, a.web.AuthorizeURL(st, challenge), http.StatusFound)
 }
 
+// errOtherUser: the browser's session cookie belongs to someone else.
+var errOtherUser = errors.New("session belongs to another user")
+
 func (a *serverAuth) handleCallback(w http.ResponseWriter, r *http.Request) {
-	a.clearCookie(w, oauthCookieBase)
 	q := r.URL.Query()
+
+	// State first, even for an error from GitHub: otherwise any site could
+	// navigate here with ?error= and cancel a sign-in in progress.
+	rt, ok := a.readRoundTrip(r)
+	if !ok || subtle.ConstantTimeCompare([]byte(rt.State), []byte(q.Get("state"))) != 1 {
+		authErrorRedirect(w, r, "state")
+		return
+	}
+	a.clearCookie(w, oauthCookieBase)
 
 	if q.Get("error") != "" {
 		log.Printf("sign-in cancelled at github")
 		authErrorRedirect(w, r, "denied")
-		return
-	}
-
-	rt, ok := a.readRoundTrip(r)
-	if !ok || subtle.ConstantTimeCompare([]byte(rt.State), []byte(q.Get("state"))) != 1 {
-		authErrorRedirect(w, r, "state")
 		return
 	}
 	code := q.Get("code")
@@ -187,17 +195,21 @@ func (a *serverAuth) handleCallback(w http.ResponseWriter, r *http.Request) {
 		authErrorRedirect(w, r, "exchange")
 		return
 	}
+	// From here on the token must either end up in a session or be revoked.
+	// The rest of the sign-in runs to completion even if the browser leaves.
+	ctx, cancel = context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+	defer cancel()
 	cl := github.New(a.cfg.GraphQLEndpoint, tok.AccessToken)
 	login, id, err := cl.ViewerIdentity(ctx)
 	if err != nil {
 		log.Printf("sign-in failed: viewer identity: %v", err)
-		a.revokeQuietly(tok.AccessToken, "unknown user")
+		a.revoke(tok.AccessToken, "unknown user")
 		authErrorRedirect(w, r, "server")
 		return
 	}
-	if err := a.allow(ctx, cl, login); err != nil {
+	if err := a.allow(ctx, cl, login, id); err != nil {
 		// A token we will never use must not outlive the request.
-		a.revokeQuietly(tok.AccessToken, login)
+		a.revoke(tok.AccessToken, login)
 		if errors.Is(err, access.ErrNotAllowed) {
 			log.Printf("sign-in refused: %s (not allowed)", login)
 			authErrorRedirect(w, r, "not_allowed")
@@ -211,26 +223,35 @@ func (a *serverAuth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	now := a.now()
 	sid := ""
 	if c, err := r.Cookie(cookieName(sessionCookieBase, a.cfg.Secure())); err == nil {
-		if old, err := a.sessions.Get(ctx, c.Value); err == nil {
-			if old.UserID == id {
-				rec := old
-				rec.Token = tok.AccessToken
-				rec.RefreshToken = tok.RefreshToken
-				rec.TokenExpiresAt = tok.ExpiresAt
-				rec.RefreshExpiresAt = tok.RefreshExpiresAt
-				rec.TokenIssuedAt = now
-				rec.VerifiedAt = now
-				if err := a.sessions.Update(ctx, c.Value, rec); err != nil {
-					log.Printf("sign-in failed: update session: %v", err)
-					authErrorRedirect(w, r, "server")
-					return
-				}
-				a.revokeQuietly(old.Token, login)
-				log.Printf("token rotated: %s (%d)", login, id)
-				sid = c.Value
-			} else {
-				a.endSessionRecord(ctx, c.Value, old, "another user signed in on this browser")
+		var replaced string
+		_, err := a.sessions.Modify(ctx, c.Value, func(rec *session.Record) error {
+			if rec.UserID != id {
+				return errOtherUser
 			}
+			replaced = rec.Token
+			rec.Token = tok.AccessToken
+			rec.RefreshToken = tok.RefreshToken
+			rec.TokenExpiresAt = tok.ExpiresAt
+			rec.RefreshExpiresAt = tok.RefreshExpiresAt
+			rec.TokenIssuedAt = now
+			rec.VerifiedAt = now
+			return nil
+		})
+		switch {
+		case err == nil:
+			if replaced != tok.AccessToken {
+				a.revoke(replaced, login)
+			}
+			log.Printf("token rotated: %s (%d)", login, id)
+			sid = c.Value
+		case errors.Is(err, errOtherUser):
+			a.endSession(r, "another user signed in on this browser")
+		case errors.Is(err, session.ErrNotFound):
+		default:
+			log.Printf("sign-in failed: update session: %v", err)
+			a.revoke(tok.AccessToken, login)
+			authErrorRedirect(w, r, "server")
+			return
 		}
 	}
 
@@ -247,6 +268,7 @@ func (a *serverAuth) handleCallback(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			log.Printf("sign-in failed: create session: %v", err)
+			a.revoke(tok.AccessToken, login)
 			authErrorRedirect(w, r, "server")
 			return
 		}
@@ -280,18 +302,6 @@ func (a *serverAuth) readRoundTrip(r *http.Request) (oauthRoundTrip, bool) {
 	return rt, true
 }
 
-// revokeQuietly revokes a token we no longer use. Failure is logged, never
-// returned: the user's sign-in must not fail because GitHub's revocation
-// endpoint was slow. The token itself is never logged.
-func (a *serverAuth) revokeQuietly(token, login string) {
-	// Not tied to the request: a browser navigating away must not cancel it.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := a.web.Revoke(ctx, a.cfg.RESTEndpoint, token); err != nil {
-		log.Printf("revoke failed: %s (%v)", login, err)
-	}
-}
-
 var _ requestAuth = (*serverAuth)(nil)
 
 // current resolves the session cookie on r. It is the one place a request
@@ -312,28 +322,50 @@ func (a *serverAuth) current(r *http.Request) (id string, rec session.Record, er
 	rec, err = a.rotate(r.Context(), id, rec)
 	switch {
 	case errors.Is(err, errReauth):
-		// The old token still works at GitHub; the session goes on until the
-		// browser re-authorises.
+		// The session goes on, without a usable token, until the browser
+		// re-authorises.
 		reauth = err
 	case err != nil:
 		return "", session.Record{}, err
 	}
-	if !a.policy.AllowAny && a.now().Sub(rec.VerifiedAt) > access.ReverifyAfter {
-		cl := github.New(a.cfg.GraphQLEndpoint, rec.Token)
-		switch err := a.allow(r.Context(), cl, rec.Login); {
-		case err == nil:
-			rec.VerifiedAt = a.now()
-			_ = a.sessions.Update(r.Context(), id, rec)
-		case errors.Is(err, access.ErrNotAllowed):
-			a.endSessionRecord(r.Context(), id, rec, "no longer allowed")
-			return "", session.Record{}, errNoSession
-		default:
-			// GitHub could not answer. Keep the session; try again next request.
-			log.Printf("re-checking access for %s failed: %v", rec.Login, err)
+	if !a.policy.AllowAny && rec.Token != "" && a.now().Sub(rec.VerifiedAt) > access.ReverifyAfter {
+		if err := a.reverify(r.Context(), id, rec); err != nil {
+			return "", session.Record{}, err
 		}
 	}
 	_ = a.sessions.Touch(r.Context(), id)
 	return id, rec, reauth
+}
+
+// reverify re-runs the access policy against the user's live identity. The
+// login is read again rather than trusted from the session: a login can be
+// renamed, and someone else can then register the old one.
+func (a *serverAuth) reverify(ctx context.Context, id string, rec session.Record) error {
+	cl := github.New(a.cfg.GraphQLEndpoint, rec.Token)
+	login, uid, err := cl.ViewerIdentity(ctx)
+	if err == nil && uid != rec.UserID {
+		a.endSessionRecord(ctx, id, rec, "GitHub answered for another user")
+		return errNoSession
+	}
+	if err == nil {
+		err = a.allow(ctx, cl, login, uid)
+	}
+	switch {
+	case err == nil:
+		now := a.now()
+		_, _ = a.sessions.Modify(ctx, id, func(r *session.Record) error {
+			r.VerifiedAt = now
+			r.Login = login
+			return nil
+		})
+	case errors.Is(err, access.ErrNotAllowed):
+		a.endSessionRecord(ctx, id, rec, "no longer allowed")
+		return errNoSession
+	default:
+		// GitHub could not answer. Keep the session; try again next request.
+		log.Printf("re-checking access for %s failed: %v", rec.Login, err)
+	}
+	return nil
 }
 
 func needsRotation(rec session.Record, now time.Time, maxAge time.Duration) bool {
@@ -358,7 +390,7 @@ func (a *serverAuth) rotate(ctx context.Context, id string, rec session.Record) 
 		return rec, nil
 	}
 	if rec.RefreshToken == "" {
-		return rec, errReauth
+		return a.retire(ctx, id, rec)
 	}
 	if !rec.RefreshExpiresAt.IsZero() && now.After(rec.RefreshExpiresAt) {
 		a.endSessionRecord(ctx, id, rec, "refresh token expired")
@@ -375,6 +407,11 @@ func (a *serverAuth) rotate(ctx context.Context, id string, rec session.Record) 
 		return a.awaitRefresh(ctx, id, rec, now)
 	}
 	defer a.kv.DeleteIfEqual(context.WithoutCancel(ctx), lockKey, []byte(owner))
+
+	// GitHub spends the refresh token the moment it answers, so the refresh
+	// and the save must finish together even if the browser goes away.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshLockTTL-5*time.Second)
+	defer cancel()
 
 	fresh, err := a.sessions.Get(ctx, id)
 	if err != nil {
@@ -395,17 +432,69 @@ func (a *serverAuth) rotate(ctx context.Context, id string, rec session.Record) 
 		log.Printf("token refresh failed for %s: %v", fresh.Login, err)
 		return session.Record{}, errUpstream
 	}
-	fresh.Token = tok.AccessToken
-	fresh.RefreshToken = tok.RefreshToken
-	fresh.TokenExpiresAt = tok.ExpiresAt
-	fresh.RefreshExpiresAt = tok.RefreshExpiresAt
-	fresh.TokenIssuedAt = now
-	if err := a.sessions.Update(ctx, id, fresh); err != nil {
+	saved, err := a.sessions.Modify(ctx, id, func(r *session.Record) error {
+		if r.Token != fresh.Token {
+			// A sign-in replaced the token meanwhile; that one wins.
+			return errReplaced
+		}
+		r.Token = tok.AccessToken
+		r.RefreshToken = tok.RefreshToken
+		r.TokenExpiresAt = tok.ExpiresAt
+		r.RefreshExpiresAt = tok.RefreshExpiresAt
+		r.TokenIssuedAt = now
+		return nil
+	})
+	if err != nil {
+		a.revoke(tok.AccessToken, fresh.Login)
+		if errors.Is(err, errReplaced) {
+			if cur, err := a.sessions.Get(ctx, id); err == nil {
+				return cur, nil
+			}
+			return session.Record{}, errNoSession
+		}
 		log.Printf("token refresh for %s not saved: %v", fresh.Login, err)
 		return session.Record{}, errUpstream
 	}
-	log.Printf("token refreshed: %s (%d)", fresh.Login, fresh.UserID)
-	return fresh, nil
+	log.Printf("token refreshed: %s (%d)", saved.Login, saved.UserID)
+	return saved, nil
+}
+
+// errReplaced: the token a change was based on is no longer the session's.
+var errReplaced = errors.New("token replaced meanwhile")
+
+// retire ends the life of an OAuth App token past its maximum age. Nothing
+// can refresh it, and it would otherwise stay valid at GitHub until the user
+// came back, so it is revoked now and removed from the session. The session
+// itself stays; the browser re-authorises into it.
+func (a *serverAuth) retire(ctx context.Context, id string, rec session.Record) (session.Record, error) {
+	if rec.Token == "" {
+		return rec, errReauth
+	}
+	old := rec.Token
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	cur, err := a.sessions.Modify(ctx, id, func(r *session.Record) error {
+		if r.Token != old {
+			return errReplaced
+		}
+		r.Token = ""
+		return nil
+	})
+	switch {
+	case err == nil:
+		a.revoke(old, rec.Login)
+		log.Printf("token retired: %s (%d)", rec.Login, rec.UserID)
+		return cur, errReauth
+	case errors.Is(err, errReplaced):
+		// Re-authorised meanwhile: use the new token.
+		if cur, err := a.sessions.Get(ctx, id); err == nil {
+			return a.rotate(ctx, id, cur)
+		}
+		return session.Record{}, errNoSession
+	default:
+		rec.Token = ""
+		return rec, errReauth
+	}
 }
 
 // awaitRefresh waits for the replica holding the refresh lock to store the
@@ -441,9 +530,7 @@ func (a *serverAuth) endSessionRecord(ctx context.Context, id string, rec sessio
 	if err := a.sessions.Delete(ctx, id); err != nil {
 		log.Printf("delete session for %s (%d): %v", rec.Login, rec.UserID, err)
 	}
-	if rec.Token != "" {
-		a.revokeQuietly(rec.Token, rec.Login)
-	}
+	a.revoke(rec.Token, rec.Login)
 	log.Printf("session ended: %s (%d) %s", rec.Login, rec.UserID, reason)
 }
 
@@ -455,10 +542,33 @@ func (a *serverAuth) endSession(r *http.Request, reason string) {
 	}
 	rec, err := a.sessions.Get(r.Context(), c.Value)
 	if err != nil {
-		_ = a.sessions.Delete(r.Context(), c.Value)
+		if !errors.Is(err, session.ErrUnreadable) {
+			_ = a.sessions.Delete(r.Context(), c.Value)
+		}
 		return
 	}
 	a.endSessionRecord(r.Context(), c.Value, rec, reason)
+}
+
+// endSessionIfToken ends r's session only if token is still the one it
+// holds, and reports whether it did. GitHub refusing a token a request
+// started with says nothing about a session that was re-authorised since.
+func (a *serverAuth) endSessionIfToken(r *http.Request, token, reason string) bool {
+	c, err := r.Cookie(cookieName(sessionCookieBase, a.cfg.Secure()))
+	if err != nil || c.Value == "" {
+		return true
+	}
+	rec, ended, err := a.sessions.DeleteIf(r.Context(), c.Value, func(rec session.Record) bool {
+		return subtle.ConstantTimeCompare([]byte(rec.Token), []byte(token)) == 1
+	})
+	if err != nil {
+		return errors.Is(err, session.ErrNotFound)
+	}
+	if ended {
+		a.revoke(rec.Token, rec.Login)
+		log.Printf("session ended: %s (%d) %s", rec.Login, rec.UserID, reason)
+	}
+	return ended
 }
 
 func (a *serverAuth) Client(r *http.Request) (*github.Client, viewer, error) {
@@ -466,7 +576,7 @@ func (a *serverAuth) Client(r *http.Request) (*github.Client, viewer, error) {
 	if err != nil {
 		return nil, viewer{}, err
 	}
-	return github.New(a.cfg.GraphQLEndpoint, rec.Token), viewer{Login: rec.Login, Mode: "github"}, nil
+	return github.New(a.cfg.GraphQLEndpoint, rec.Token), viewer{Login: rec.Login, Mode: "github", token: rec.Token}, nil
 }
 
 // Settings needs no GitHub token, so a session waiting to re-authorise can
