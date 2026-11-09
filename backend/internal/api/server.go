@@ -112,7 +112,9 @@ func newServerBase(cfg config.Config, ui http.Handler) *Server {
 			s.allowedHosts[hostname(u.Host)] = true
 		}
 	}
-	if h := cfg.PublicHost(); h != "" {
+	// Server mode only: in local mode GHDASH_PUBLIC_URL means nothing, and a
+	// stray value must not widen the Host allowlist.
+	if h := cfg.PublicHost(); h != "" && cfg.AuthMode == config.AuthServer {
 		s.allowedHosts[h] = true
 	}
 	delete(s.allowedHosts, "")
@@ -370,7 +372,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	got, err := st.Get(r.Context())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		s.storeError(w, http.StatusBadGateway, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, got)
@@ -405,21 +407,21 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	saved, err := st.Save(r.Context(), in)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.storeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
-	cl, _, err := s.ra.Client(r)
+	cl, v, err := s.ra.Client(r)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
 	m, err := cl.Memberships(r.Context())
 	if err != nil && len(m.Orgs) == 0 && len(m.Teams) == 0 {
-		if s.tokenRejected(w, r, err) {
+		if s.tokenRejected(w, r, v, err) {
 			return
 		}
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -445,7 +447,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, err := st.Get(r.Context())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		s.storeError(w, http.StatusBadGateway, err)
 		return
 	}
 
@@ -473,7 +475,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := board.Build(r.Context(), cl, req)
 	if err != nil {
-		if s.tokenRejected(w, r, err) {
+		if s.tokenRejected(w, r, v, err) {
 			return
 		}
 		status := http.StatusBadGateway
@@ -504,7 +506,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		Now:   time.Now(),
 	})
 	if err != nil {
-		if s.tokenRejected(w, r, err) {
+		if s.tokenRejected(w, r, v, err) {
 			return
 		}
 		status := http.StatusBadGateway
@@ -538,6 +540,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// storeError answers a failure to read or write settings. In server mode the
+// detail stays in the log: a Redis error names internal addresses.
+func (s *Server) storeError(w http.ResponseWriter, status int, err error) {
+	if s.server == nil {
+		writeError(w, status, err.Error())
+		return
+	}
+	log.Printf("settings store: %v", err)
+	writeError(w, status, "settings are unavailable right now; try again")
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
@@ -559,13 +572,18 @@ func writeAuthError(w http.ResponseWriter, err error) {
 
 // tokenRejected handles GitHub refusing a server-mode session's token: the user
 // revoked the app, an org owner removed it, or GitHub dropped it over its
-// per-user token cap. The session ends and the answer is 401, not 502.
+// per-user token cap. The session ends and the answer is 401, not 502 —
+// unless the session was re-authorised while this request ran, in which case
+// the refused token was already the old one and the session is fine.
 // Local mode keeps its own handling.
-func (s *Server) tokenRejected(w http.ResponseWriter, r *http.Request, err error) bool {
+func (s *Server) tokenRejected(w http.ResponseWriter, r *http.Request, v viewer, err error) bool {
 	if s.server == nil || !errors.Is(err, github.ErrUnauthorized) {
 		return false
 	}
-	s.server.endSession(r, "token rejected by GitHub")
+	if !s.server.endSessionIfToken(r, v.token, "token rejected by GitHub") {
+		writeError(w, http.StatusServiceUnavailable, "the sign-in was renewed while this request ran; try again")
+		return true
+	}
 	s.server.clearCookie(w, sessionCookieBase)
 	writeError(w, http.StatusUnauthorized, errNoSession.Error())
 	return true
