@@ -114,12 +114,25 @@ pod by IP. They return a status and a timestamp and nothing else.
   token copied into another session's value does not open. Redis persistence,
   replicas, backups and `MONITOR` only ever see sealed values.
 - **Every session key has a TTL.** It is the session's effective expiry (idle
-  or absolute, whichever comes first) plus an hour, so a session disappears even
-  if the app is gone. The hour is there so the reaper can still revoke it.
+  or absolute, whichever comes first) plus a day, so a session disappears even
+  if the app is gone. The day is there so the reaper can still revoke it.
+- **Writes cannot undo each other.** Every change to a session is a
+  compare-and-set that touches only the fields its writer owns, so a request
+  updating "last seen" on one replica can never put back a token that another
+  replica has just rotated.
 - **Per-user settings hold no secret** and have no TTL.
-- **Key rotation.** `GHDASH_SESSION_KEYS` is a list: the first key seals, every
-  key opens. To rotate, prepend a new key, wait `GHDASH_SESSION_MAX`, then
-  remove the old one. Removing a key early signs out every session it sealed.
+- **Key rotation.** `GHDASH_SESSION_KEYS` is a list: the first key seals,
+  every key opens. Rotate in three deploys:
+  1. **Add** the new key at the **end** (`old,new`). Every replica can now open
+     both, and nothing is sealed with the new key yet.
+  2. Once every replica runs step 1, **move** the new key to the **front**
+     (`new,old`).
+  3. After `GHDASH_SESSION_MAX`, **remove** the old key.
+
+  Skipping step 1 is safe but rough: during the rollout, replicas that do not
+  have the new key yet cannot read sessions sealed with it, and those users are
+  asked to sign in again. Such sessions are never deleted by a replica that
+  cannot read them; a replica with the key still revokes them at expiry.
 - **Cookie attributes.** `HttpOnly` and `SameSite=Lax` always. When
   `GHDASH_PUBLIC_URL` is `https`, also `Secure` and the `__Host-` prefix, which
   makes the browser refuse the cookie unless it is `Secure`, `Path=/` and has no
@@ -161,11 +174,16 @@ How a token is replaced:
 
 A token is also revoked at GitHub when the user signs out, when a session
 expires unattended (the reaper runs every five minutes, one replica at a time,
-and revokes every session past its idle or maximum age), and when access is
-withdrawn. If GitHub rejects a token, the session ends. A failed revocation is
-logged and the session is deleted anyway; if the reaper cannot run at all, Redis
-deletes the session an hour later, and the token is then only invalidated by
-GitHub or the user.
+and revokes every session past its idle or maximum age), when access is
+withdrawn, and — for an OAuth App — the moment it passes its maximum age, even
+if the user never comes back. If GitHub rejects the token a session currently
+holds, the session ends; a request that fails with a token the session has
+already replaced leaves it alone.
+
+A revocation that fails is not dropped: the token is sealed into a retry queue
+that the reaper works through with backoff, for up to eight attempts over about
+a day. If no reaper runs for a whole day, Redis deletes the session and the
+token is then only invalidated by GitHub or the user.
 
 **Why:** an OAuth App token never expires on its own. Without rotation, a token
 copied out of a running process would stay valid indefinitely. GitHub also keeps
@@ -181,14 +199,19 @@ Server mode refuses to start without an access policy. Set at least one of:
 | Variable | Admits |
 | --- | --- |
 | `GHDASH_ALLOWED_ORGS` | members of these orgs |
-| `GHDASH_ALLOWED_USERS` | these logins |
+| `GHDASH_ALLOWED_USERS` | these logins, or these numeric user IDs written `id:583231` |
 | `GHDASH_ALLOW_ANY_USER=true` | anyone with a GitHub account, written down on purpose |
 
 Allowing everyone is legitimate — each user only sees what their own token can
 see — but it has to be a decision, not an accident.
 
+A login can be renamed, and someone else can then register the old one. Where
+that matters, list users by ID (`id:583231`, the `databaseId` GitHub reports
+for the account) rather than by login.
+
 A refused sign-in has its token revoked straight away. Access is re-checked
-every 12 hours on a live session; someone who left the org is signed out and
+every 12 hours on a live session, against the login and ID GitHub reports now,
+not the ones stored at sign-in; someone who left the org is signed out and
 their token revoked at the next check. A GitHub outage during the check never
 signs anyone out.
 
@@ -204,13 +227,26 @@ What each kind of access to a running deployment is worth to an attacker.
 | --- | --- | --- | --- |
 | Read access to Redis (dump, replica, backup, `MONITOR`) | Logins, GitHub user IDs, settings, session expiry times | Any token (sealed), any cookie (only hashes are stored) | Redis AUTH, TLS and a network policy; see [Redis or Valkey](../../usage/redis.md#hardening) |
 | The Kubernetes Secret (`session-keys`, client secret) | The ability to run a look-alike app with your OAuth App | Any user's token: the sealed tokens live in Redis | Keep the Secret and Redis out of the same backup; rotate the client secret and the session keys |
-| Both Redis and `session-keys` | Every live token, until it is rotated (at most its maximum age) or its session ends | Cookies; tokens of sessions already ended (revoked at GitHub) | A shorter `GHDASH_TOKEN_MAX_AGE`, or the per-kind overrides, shrinks the window. Keys wrapped by a KMS are not supported yet |
+| Both Redis and `session-keys` | Every token still stored: at most its maximum age old, because OAuth App tokens are revoked and dropped at that age and GitHub App tokens are refreshed. A GitHub App refresh token lives longer (months), until its session ends | Cookies; tokens of sessions already ended or retired (revoked at GitHub) | A shorter `GHDASH_TOKEN_MAX_AGE`, or the per-kind overrides, shrinks the window. Keys wrapped by a KMS are not supported yet |
 | A user's session cookie | That user's dashboard until sign-out or expiry | Other users' data; the token itself | `HttpOnly`, `Secure`, `__Host-`; sign-out revokes |
 | A running process's memory | Tokens of users active on that process | — | Pod hardening; token maximum age |
 
-If a secret leaks: generate a new client secret in GitHub's app settings and
-delete the old one; prepend a new session key and remove the leaked one at once
-(this signs everyone out, which is the point); change the Redis password.
+If a secret leaks:
+
+- **The session keys.** Assume every stored token is known, and revoke them at
+  GitHub: removing the key only stops *this* app from reading the tokens, which
+  stay valid — and an OAuth App token never expires on its own. The app's owner
+  can revoke each account's authorization of the app, which revokes that
+  account's tokens (GitHub: [Token expiration and
+  revocation](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/token-expiration-and-revocation)).
+  Then deploy a new key **alone** (this signs everyone out, which is the point)
+  and change the Redis password.
+- **The client secret.** Generate a new one in the app's settings, deploy it,
+  then delete the old one. A new client secret does not revoke tokens already
+  issued; if Redis or the session keys may have leaked with it, revoke them as
+  above.
+- **The Redis password.** Change it, and treat Redis as read: if the session
+  keys are safe, no token is exposed.
 
 ## Token custody
 
