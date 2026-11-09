@@ -38,8 +38,13 @@ because routing rewrites the URL right after and would drop it. Every 401 goes
 through `handleAuthFailure()` in `App.vue`. When the body carries
 `"reauth": true` (the token is past its maximum age but the session is fine),
 `lib/reauth.ts` sends the page through GitHub and back to the same path, waiting
-until the tab is visible and going at most once a minute; any other 401, or a
-second reauth within the minute, shows the gate.
+until the tab is visible and going at most once a minute. Any other 401 shows
+the gate. A reauth that would loop — a second one within the minute, or one on
+a page that has just come back with `?authError=` — shows a recovery screen
+instead, with the reason, **Renew sign-in** and **Sign out**. The decision is
+`decideAuthFailure()`, a pure function with unit tests in
+`lib/reauth.test.ts`. A page restored from the back/forward cache reloads,
+so nothing is left showing "Opening GitHub".
 
 A refresh fires both endpoints together — `/api/board` and `/api/stats` — with
 their errors kept in **separate** refs. A failing week must not blank the
