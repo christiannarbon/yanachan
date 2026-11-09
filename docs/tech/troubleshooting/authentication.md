@@ -101,7 +101,8 @@ again, you are re-approving an *environment* token that is still present —
 Server mode only. The browser lands on `/?authError=not_allowed` after GitHub
 let you through: the deployment's access policy did not admit you.
 
-- **The policy.** `GHDASH_ALLOWED_USERS` (logins, case-insensitive),
+- **The policy.** `GHDASH_ALLOWED_USERS` (logins, case-insensitive, or `id:<n>`
+  for a numeric user ID),
   `GHDASH_ALLOWED_ORGS` (org logins) or `GHDASH_ALLOW_ANY_USER=true`. Check the
   login or org is spelled the way GitHub spells it.
 - **An OAuth App (the default) and an org with third-party access
@@ -113,8 +114,8 @@ let you through: the deployment's access policy did not admit you.
   **Members: read** organization permission; without it the org is invisible in
   the same way.
 
-`authError=server` instead means GitHub could not be asked at all (an outage or
-a network problem); try again.
+`authError=server` instead means something failed on the server side; see
+[below](#autherrorserver).
 
 Access is re-checked every 12 hours on an existing session. Someone removed from
 the org keeps working for at most that long, then is signed out and their token
@@ -181,6 +182,20 @@ See [Signed in with GitHub but told *not allowed*](#signed-in-with-github-but-to
 above. In short: not in an allowed org, an OAuth App the org has not approved,
 or a GitHub App not installed on the org.
 
+## `authError=server`
+
+Anything that went wrong on the server's side of the sign-in: GitHub could not
+be asked who you are or which orgs you are in, or the session could not be
+stored because Redis failed. The server log has the reason on a
+`sign-in failed:` line. A token that was issued but could not be stored is
+revoked.
+
+## `503` *the sign-in was renewed while this request ran*
+
+A request started with the old token, and the session was re-authorised in
+another tab before GitHub answered. The session is fine; the next refresh uses
+the new token.
+
 ## The page flicks to GitHub and back every few hours
 
 Expected, with an OAuth App. Its tokens never expire on their own, so the
@@ -190,10 +205,21 @@ settings are untouched. For fewer redirects, raise
 `GHDASH_OAUTH_APP_TOKEN_MAX_AGE`; the trade-off is in
 [token lifetime](../architecture/security.md#token-lifetime-server-mode).
 
+## *Your GitHub sign-in could not be renewed*
+
+The page tried to renew the sign-in through GitHub and came back with an error,
+or it already went once in the last minute and going again would loop. It stops
+and offers **Renew sign-in** and **Sign out**; the reason, if GitHub gave one,
+is shown above them. Renewing by hand is safe: a click is not a loop.
+
+If renewing fails every time, look at the reason, then at
+[`authError=exchange`](#autherrorexchange) and
+[`authError=server`](#autherrorserver) below.
+
 ## It keeps going to GitHub and back
 
-The page goes to GitHub at most once a minute; a second attempt within the
-minute shows the sign-in screen instead. If that screen keeps coming back after
+The page goes to GitHub at most once a minute on its own, and never straight
+after coming back with an error. If the sign-in screen keeps coming back after
 signing in:
 
 - **Cookies are blocked** for the site, so the session never sticks.
