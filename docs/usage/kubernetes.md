@@ -74,6 +74,9 @@ or a one-off `kubectl create secret` — before applying.
 
 The service is deliberately ClusterIP. The pod holds a GitHub token and has no
 login of its own, so reach it through the tunnel rather than exposing it.
+This page describes the local-mode developer deployment; the Helm chart, when it
+lands, runs [server mode](authentication.md#server-mode), which is built to be
+exposed.
 
 If you put it behind an authenticating proxy anyway, the hostname that proxy
 uses has to be in `GHDASH_ALLOWED_HOSTS` or the app will refuse the request. See

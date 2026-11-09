@@ -48,8 +48,8 @@ first screen before it is used.
 | `GHDASH_SESSION_IDLE` | `168h` | a session ends after this long unused |
 | `GHDASH_SESSION_MAX` | `720h` | a session ends after this long regardless. Must be ≥ idle |
 | `GHDASH_TOKEN_MAX_AGE` | `8h` | how long one GitHub token may serve a session before rotation. Between `15m` and `GHDASH_SESSION_MAX` |
-| `GHDASH_OAUTH_APP_TOKEN_MAX_AGE` | inherits `GHDASH_TOKEN_MAX_AGE` | the same, for sessions without a refresh token (OAuth Apps). Same bounds |
-| `GHDASH_GITHUB_APP_TOKEN_MAX_AGE` | inherits `GHDASH_TOKEN_MAX_AGE` | the same, for sessions with a refresh token (GitHub Apps). Same bounds |
+| `GHDASH_OAUTH_APP_TOKEN_MAX_AGE` | inherits `GHDASH_TOKEN_MAX_AGE` | the same, for sessions without a refresh token (OAuth Apps, and GitHub Apps with token expiry off). Same bounds |
+| `GHDASH_GITHUB_APP_TOKEN_MAX_AGE` | inherits `GHDASH_TOKEN_MAX_AGE` | the same, for sessions with a refresh token (GitHub Apps with expiring tokens). Same bounds |
 | `GHDASH_REST_ENDPOINT` | `https://api.github.com` | used for token revocation. GHES: `https://HOST/api/v3` |
 
 Server mode keeps nothing on disk, so `GHDASH_STATE_DIR` is ignored and
@@ -60,6 +60,15 @@ On startup the server checks all of the above and refuses to start if anything i
 missing, malformed or out of range. Every problem is printed on its own `config:`
 line, then the process exits with code 1. No secret value is ever printed. Local
 mode ignores these variables entirely.
+
+The two token-age overrides apply by **session kind** — whether GitHub returned
+a refresh token at sign-in — not by client ID. All three ages must be between
+`15m` and `GHDASH_SESSION_MAX`; an override is checked only when it is set. When
+to set them separately: [token lifetime](../architecture/security.md#token-lifetime-server-mode).
+
+Once the configuration passes, the server pings Redis with a 10-second timeout
+and exits if it cannot reach it. The log names the Redis host and port and the
+key prefix, never the password. More: [Redis or Valkey](../../usage/redis.md).
 
 ## Defaults
 
@@ -103,7 +112,7 @@ make k8s-up OVERLAY=prod PF_PORT=18080
 
 | | `make run` | Docker | Kubernetes |
 | --- | --- | --- | --- |
-| `GHDASH_AUTH_MODE` | `local` | `local` | `local` |
+| `GHDASH_AUTH_MODE` | `local` | `local` | `local` (the Helm chart, when it lands, defaults to `server`) |
 | `GHDASH_ADDR` | `127.0.0.1:19080` | `:19080` | `:19080` |
 | `GHDASH_STATE_DIR` | OS config dir | `/data` (volume) | `/data` (PVC) |
 | `GHDASH_ALLOW_GH_CLI` | `true` | `false` | `false` |
