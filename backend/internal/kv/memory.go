@@ -95,6 +95,17 @@ func (m *Memory) DeleteIfEqual(_ context.Context, key string, val []byte) (bool,
 	return true, nil
 }
 
+func (m *Memory) SetIfEqual(_ context.Context, key string, old, val []byte, ttl time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.live(key)
+	if !ok || !bytes.Equal(e.val, old) {
+		return false, nil
+	}
+	m.vals[key] = entry{val: bytes.Clone(val), expiresAt: m.expiry(ttl)}
+	return true, nil
+}
+
 func (m *Memory) Delete(_ context.Context, keys ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
