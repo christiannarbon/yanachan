@@ -123,3 +123,16 @@ make down
 ```
 
 Logs are `.run/api.log` and `.run/web.log`; `make logs` tails both.
+
+## `make image-multiarch` says multi-platform builds are not supported
+
+"Multi-platform build is not supported for the docker driver" means your
+default buildx builder cannot hold an image for two platforms. Docker Desktop
+with the containerd image store, and OrbStack, can; the classic docker driver
+cannot. Create a builder that can, once:
+
+```sh
+docker buildx create --name yana-multi --driver docker-container --use
+```
+
+`make docker-build` builds for your own platform only and does not need it.
