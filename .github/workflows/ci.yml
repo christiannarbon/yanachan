@@ -18,6 +18,11 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The same pin as VALKEY_IMAGE in the Makefile. Dependabot does not see it here;
+# refresh both together.
+env:
+  VALKEY_IMAGE: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+
 jobs:
   backend:
     name: Backend
@@ -78,9 +83,7 @@ jobs:
           pw=$(openssl rand -hex 16)
           echo "::add-mask::$pw"
           echo "GHDASH_TEST_REDIS_PASSWORD=$pw" >> "$GITHUB_ENV"
-          # The same pin as VALKEY_IMAGE in the Makefile.
-          docker run -d --name valkey -p 127.0.0.1:6379:6379 \
-            valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b \
+          docker run -d --name valkey -p 127.0.0.1:6379:6379 "$VALKEY_IMAGE" \
             valkey-server --requirepass "$pw" --save "" --appendonly no
           for _ in $(seq 1 30); do
             docker exec valkey valkey-cli -a "$pw" --no-auth-warning ping 2>/dev/null | grep -q PONG && exit 0
@@ -339,7 +342,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Only to run the arm64 image; the build itself cross-compiles.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # What a release ships: both platforms from one build. Nothing is loaded
+      # or pushed; the steps below load one platform at a time from the cache.
+      - name: Build every release platform
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          # A fixed date keeps the label layer, and so the cache, stable.
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=1970-01-01T00:00:00Z
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       # Built, never pushed. This job answers "does the multi-stage build still
       # work", which is a different question from anything the jobs above ask:
       # it is the only place the pinned base image digests are exercised.
@@ -351,6 +374,10 @@ jobs:
           push: false
           load: true
           tags: yanachan:ci
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=1970-01-01T00:00:00Z
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -382,6 +409,128 @@ jobs:
           docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' yanachan:ci \
             | grep -qx 'GHDASH_ALLOW_GH_CLI=false'
           echo "  gh CLI sign-in is disabled in the image"
+
+          docker run --rm yanachan:ci --version | grep -q '^yanachan ci '
+          echo "  the binary is stamped"
+
+          for label in title description source url documentation licenses version revision created; do
+            value=$(docker inspect -f "{{ index .Config.Labels \"org.opencontainers.image.$label\" }}" yanachan:ci)
+            test -n "$value" || { echo "::error::label org.opencontainers.image.$label is missing"; exit 1; }
+          done
+          echo "  OCI labels present"
+          docker run --rm --entrypoint ls yanachan:ci \
+            /usr/share/licenses/yanachan/LICENSE /usr/share/licenses/yanachan/THIRD_PARTY_NOTICES.md >/dev/null
+          echo "  licence and notices shipped in the image"
+
+      # The image defaults to local mode, but a cluster runs it in server mode,
+      # so both have to start from the same image.
+      - name: Smoke test server mode
+        run: |
+          set -euo pipefail
+          if docker run --rm -e GHDASH_AUTH_MODE=server yanachan:ci >/tmp/half.log 2>&1; then
+            echo "::error::server mode started without its configuration"; cat /tmp/half.log; exit 1
+          fi
+          grep -q 'config: ' /tmp/half.log || { echo "::error::no config: line"; cat /tmp/half.log; exit 1; }
+          echo "  half-configured server mode refuses to start"
+
+          # Generated here, never committed. The client ID and secret are
+          # placeholders: nothing in this step talks to GitHub.
+          key=$(head -c32 /dev/urandom | base64)
+          rpw=$(head -c24 /dev/urandom | base64 | tr -d '/+=')
+          echo "::add-mask::$key"
+          echo "::add-mask::$rpw"
+          srv_env=(-e GHDASH_AUTH_MODE=server
+            -e GITHUB_CLIENT_ID=ci-placeholder-client-id
+            -e GITHUB_CLIENT_SECRET=ci-placeholder-client-secret
+            -e GHDASH_SESSION_KEYS="$key"
+            -e GHDASH_PUBLIC_URL=http://localhost:19080
+            -e GHDASH_ALLOW_ANY_USER=true
+            -e GHDASH_REDIS_URL=redis://valkey:6379/0
+            -e GHDASH_REDIS_PASSWORD="$rpw")
+          docker network create yana-ci >/dev/null
+          trap 'docker logs yana-srv 2>&1 | tail -20; docker rm -f yana-srv valkey >/dev/null 2>&1 || true; docker network rm yana-ci >/dev/null 2>&1 || true' EXIT
+
+          if docker run --rm --network yana-ci "${srv_env[@]}" yanachan:ci >/tmp/noredis.log 2>&1; then
+            echo "::error::server mode started without Redis"; exit 1
+          fi
+          grep -qi redis /tmp/noredis.log || { echo "::error::no Redis error in the log"; cat /tmp/noredis.log; exit 1; }
+          echo "  server mode refuses to start without Redis"
+
+          docker run -d --name valkey --network yana-ci "$VALKEY_IMAGE" \
+            valkey-server --requirepass "$rpw" --save "" --appendonly no >/dev/null
+          docker run -d --name yana-srv --network yana-ci -p 127.0.0.1:19082:19080 "${srv_env[@]}" yanachan:ci >/dev/null
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:19082/api/ready >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:19082/api/ready >/dev/null
+          echo "  /api/ready is 200 with Valkey up"
+
+          # The Host allowlist admits the public URL's host, localhost here.
+          curl -sf -H 'Host: localhost:19080' http://127.0.0.1:19082/api/auth/status >/tmp/status.json
+          grep -q '"authMode":"server"' /tmp/status.json
+          grep -q '"loginUrl":"/api/auth/login"' /tmp/status.json
+          if cat /tmp/half.log /tmp/noredis.log <(docker logs yana-srv 2>&1) \
+              | grep -q -F -e "$key" -e "$rpw" -e ci-placeholder-client-secret; then
+            echo "::error::a secret reached the log"; exit 1
+          fi
+          echo "  server mode starts, reports itself, and logs no secret"
+
+          docker stop valkey >/dev/null
+          sleep 3
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19082/api/ready)" = 503
+          curl -sf http://127.0.0.1:19082/api/health >/dev/null
+          docker inspect -f '{{.State.Running}}' yana-srv | grep -q true
+          echo "  /api/ready is 503 without Valkey; /api/health still 200; still running"
+
+      # Measured inside the container: .Size depends on the image store
+      # (compressed or not), du does not. About 22 MiB on 2026-11-11.
+      - name: Check the image size
+        run: |
+          set -euo pipefail
+          kib=$(docker run --rm --user 0 --entrypoint du yanachan:ci -sxk / | awk '{print $1}')
+          echo "image size: $((kib / 1024)) MiB"
+          test "$kib" -lt $((35 * 1024)) || { echo "::error::image grew past 35 MiB ($((kib / 1024)) MiB)"; exit 1; }
+
+      # CRITICAL and fixable fails; HIGH, and anything without a fix, does not.
+      # See docs/tech/ci.md for why.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: yanachan:ci
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Build arm64 for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: yanachan:ci-arm64
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=1970-01-01T00:00:00Z
+          cache-from: type=gha
+
+      - name: Smoke test arm64
+        run: |
+          set -euo pipefail
+          test "$(docker inspect -f '{{.Architecture}}' yanachan:ci-arm64)" = arm64
+          docker run --rm --platform linux/arm64 yanachan:ci-arm64 --version | grep -q '^yanachan ci '
+          docker run -d --name yana-arm --platform linux/arm64 -p 127.0.0.1:19081:19080 yanachan:ci-arm64 >/dev/null
+          trap 'docker logs yana-arm 2>&1 | tail -20; docker rm -f yana-arm >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:19081/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:19081/api/health | grep -q '"status":"ok"'
+          echo "  arm64 image answers"
 
   docs:
     name: Documentation

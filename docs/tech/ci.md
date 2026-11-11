@@ -19,7 +19,7 @@ alone so the record of what passed stays intact.
 | **Vulnerabilities** | `govulncheck` finds no reachable vulnerability in the standard library or go-redis |
 | **Build and smoke test** | `make build` produces a binary that serves the embedded app correctly |
 | **Kubernetes manifests** | both overlays render, schema-check, and keep their security posture |
-| **Container image** | the multi-stage build works and the container behaves |
+| **Container image** | the image builds for amd64 and arm64, both start, it is labelled and licensed, it runs in local and server mode, it has no fixable critical vulnerability, and it has not grown |
 | **Documentation** | every internal link in the Markdown resolves |
 
 They run in parallel. Nothing depends on anything else.
@@ -89,10 +89,49 @@ overlay grows an `Ingress`, a `LoadBalancer` or a `NodePort`. The pod holds a
 GitHub token and has no login of its own, so ClusterIP is a decision rather than
 a default.
 
-**Container image.** The only job that exercises the digest-pinned base images.
-Then it checks the container runs as uid 10001 — a rebuild that drops the `USER`
-line passes every other check in the file — and that `GHDASH_ALLOW_GH_CLI` is
-still `false` in the image environment.
+**Container image.** The only job that exercises the digest-pinned base images,
+and the only one that sees what a release ships. In order:
+
+- **Both platforms build** from one `buildx` call, as a release would build
+  them. Nothing is loaded or pushed; the later steps load one platform at a time
+  from the same cache. The build args are fixed (`VERSION=ci`, the commit, a
+  1970 build date) so the label layer, and with it the cache, stays the same
+  between runs.
+- **The amd64 container behaves:** health answers, the frontend is embedded, it
+  runs as uid 10001 (a rebuild that drops the `USER` line passes every other
+  check in the file), `GHDASH_ALLOW_GH_CLI` is still `false`, and `--version`
+  says `yanachan ci`.
+- **Labels and licence:** all nine `org.opencontainers.image.*` labels are set,
+  and `LICENSE` and `THIRD_PARTY_NOTICES.md` are in
+  `/usr/share/licenses/yanachan/`. GHCR links a package to its repository
+  through the `source` label, and the licence has to travel with every copy.
+- **Server mode from the same image.** The image defaults to local mode, but a
+  cluster runs it in server mode, so the job proves that too, against a
+  throwaway Valkey on a private Docker network (`VALKEY_IMAGE`): a
+  half-configured start refuses with `config:` lines; a fully configured start
+  with no Redis refuses and says Redis; with Valkey up, `/api/ready` is `200`
+  and `/api/auth/status` says `"authMode":"server"`; none of the three logs
+  contains the session key, the Redis password or the client secret; with
+  Valkey stopped, `/api/ready` is `503` while `/api/health` stays `200` and the
+  process keeps running. The session key and password are generated per run
+  and masked; the client ID and secret are placeholders, because nothing here
+  talks to GitHub.
+- **Size budget: 35 MiB.** Measured on 2026-11-11 at **22 MiB** (Alpine and its
+  certificates about 13 MiB, the binary about 9 MiB), so the budget is roughly
+  1.5×. It is measured with `du` inside the container rather than
+  `docker image inspect .Size`, because that number depends on the image store:
+  with the containerd store it can report compressed sizes. A sudden jump
+  usually means a build tool or `node_modules` leaked into the runtime stage.
+- **Vulnerability scan:** Trivy, over the Alpine packages and the Go binary.
+  It fails only on a **CRITICAL** finding **with a fix available**. A HIGH, or
+  anything without a fix, is printed but does not fail: nobody can act on a
+  finding with no fix, and a gate that is red for reasons nobody can act on
+  gets switched off. `govulncheck` remains the sharper gate for Go code,
+  because it knows which vulnerable functions are actually reached.
+- **arm64 starts.** The runners are amd64, so the arm64 image runs under QEMU.
+  That is slow for building but fine for starting a Go binary: the build itself
+  cross-compiles, and QEMU is only there for this step, which checks the
+  image's architecture, `--version` and health.
 
 **Documentation.** `make docs-check`, the same command you can run locally.
 
@@ -126,7 +165,9 @@ it meant last week.
 | govulncheck | `v1.9.0` | workflow |
 | kustomize | `v5.4.3` | workflow |
 | kubeconform | `v0.6.7` | workflow, `-kubernetes-version 1.33.0` |
-| Valkey | `9.1.3-alpine`, by digest | workflow and `VALKEY_IMAGE` in the Makefile |
+| Valkey | `9.1.3-alpine`, by digest | `VALKEY_IMAGE` in the workflow's `env:` and in the Makefile; not seen by Dependabot, so refresh both by hand |
+| Trivy | `aquasecurity/trivy-action` `v0.36.0`, by commit SHA | workflow; the action pins the Trivy release it installs |
+| QEMU | `docker/setup-qemu-action` `v4.4.0`, by commit SHA | workflow |
 | vitest | `5.0.5` | `frontend/package-lock.json` |
 | Actions | by commit SHA, version in a trailing comment | workflow |
 
