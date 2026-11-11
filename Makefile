@@ -18,7 +18,7 @@ API_PORT      ?= 19080
 WEB_PORT      ?= 19090
 API_HOST      ?= 127.0.0.1
 
-IMAGE_NAME    ?= yana-chan-4k
+IMAGE_NAME    ?= yanachan
 IMAGE_TAG     ?= dev
 IMAGE         := $(IMAGE_NAME):$(IMAGE_TAG)
 
@@ -26,8 +26,14 @@ ROOT      := $(shell pwd)
 BACKEND   := $(ROOT)/backend
 FRONTEND  := $(ROOT)/frontend
 EMBED_DIR := $(BACKEND)/internal/webui/dist
-BIN       := $(ROOT)/bin/yana-chan-4k
+BIN       := $(ROOT)/bin/yanachan
 RUN_DIR   := $(ROOT)/.run
+
+VERSION    := $(shell cat $(ROOT)/VERSION 2>/dev/null || echo dev)
+COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILDINFO  := github.com/christiannarbon/yanachan-4k/backend/internal/buildinfo
+LDFLAGS    := -s -w -X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).Date=$(BUILD_DATE)
 
 DEV_ORIGIN := http://localhost:$(WEB_PORT)
 
@@ -98,7 +104,7 @@ build-frontend: ## Compile the Vue app and stage it for embedding
 .PHONY: build-backend
 build-backend: ## Compile the Go server with the frontend embedded
 	@mkdir -p $(ROOT)/bin
-	@cd $(BACKEND) && go build -trimpath -o $(BIN) ./cmd/server
+	@cd $(BACKEND) && go build -trimpath -ldflags='$(LDFLAGS)' -o $(BIN) ./cmd/server
 	@echo "built $(BIN)"
 
 .PHONY: test
@@ -116,6 +122,10 @@ docs-check: ## Check every internal link in the documentation
 
 .PHONY: check
 check: fmt test docs-check ## Format, vet, test and check the docs
+
+.PHONY: notices
+notices: ## Regenerate THIRD_PARTY_NOTICES.md
+	@node $(ROOT)/scripts/third-party-notices.mjs
 
 # -------------------------------------------------------------------- run ---
 
@@ -163,7 +173,18 @@ logs: ## Tail the background dev logs
 
 .PHONY: images
 images: ## Build the container image
-	docker build -f $(ROOT)/deploy/docker/Dockerfile -t $(IMAGE) $(ROOT)
+	docker build -f $(ROOT)/deploy/docker/Dockerfile \
+	  --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_DATE=$(BUILD_DATE) \
+	  -t $(IMAGE) $(ROOT)
+
+PLATFORMS ?= linux/amd64,linux/arm64
+
+.PHONY: image-multiarch
+image-multiarch: ## Build the image for every release platform (no load, no push)
+	docker buildx build -f $(ROOT)/deploy/docker/Dockerfile \
+	  --platform $(PLATFORMS) \
+	  --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_DATE=$(BUILD_DATE) \
+	  $(ROOT)
 
 .PHONY: docker-build
 docker-build: images ## Alias for images
