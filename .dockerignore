@@ -1,0 +1,7 @@
+**/node_modules
+bin
+frontend/dist
+.git
+.run
+.idea
+dev_notes
