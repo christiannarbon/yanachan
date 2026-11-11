@@ -36,5 +36,7 @@ knowledge is assumed; if you are here to change the code, start at
   everyone in with, and choose between the two.
 - [Redis or Valkey](redis.md) — where server mode keeps sessions and settings,
   and how to harden it.
+- [Support policy](support-policy.md) — supported versions, platforms and
+  upgrade paths.
 
 Something not behaving? See [troubleshooting](../tech/troubleshooting/).
