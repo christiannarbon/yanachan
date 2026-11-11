@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    image: ${GHDASH_IMAGE:-yana-chan-4k:dev}
+    image: ${GHDASH_IMAGE:-yanachan:dev}
     container_name: yana-chan-4k
     # Bound to loopback: the dashboard holds a GitHub token and has no login
     # of its own.
