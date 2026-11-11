@@ -16,7 +16,7 @@ Multi-stage, and small at the end of it:
 
 1. **node** builds the Vue bundle.
 2. **golang** embeds that bundle into the server binary with `go:embed`, built
-   `CGO_ENABLED=0` and trimmed.
+   `CGO_ENABLED=0` and trimmed, and stamps it with the version from `VERSION`.
 3. **alpine** carries the binary, `ca-certificates` and `tzdata` — no node, no
    web server, nothing to serve the frontend with because the frontend is inside
    the binary.
@@ -31,6 +31,39 @@ docker buildx imagetools inspect node:24-alpine --format '{{.Manifest.Digest}}'
 ```
 
 There is a `HEALTHCHECK` hitting `/api/health` every 30 seconds.
+
+The image is built for `linux/amd64` and `linux/arm64`. The node and golang
+stages run on the build machine and cross-compile, so building the arm64 image
+on an Intel machine, or the reverse, needs no emulation:
+
+```sh
+make image-multiarch                       # both platforms, nothing loaded or pushed
+docker run --rm yanachan:dev --version     # after make docker-build
+```
+
+It defaults to `GHDASH_AUTH_MODE=local`. Server mode is switched on per
+deployment with `-e GHDASH_AUTH_MODE=server` (see [below](#server-mode)), never
+baked into the image. The `/data` volume and `GHDASH_STATE_DIR=/data` serve
+local mode only; server mode writes nothing to disk.
+
+The licence and the third-party notices are in
+`/usr/share/licenses/yanachan/` (`LICENSE` and `THIRD_PARTY_NOTICES.md`). The
+image carries the standard OCI labels:
+
+| Label | Value |
+| --- | --- |
+| `org.opencontainers.image.title` | `yanachan` |
+| `org.opencontainers.image.description` | what it is |
+| `org.opencontainers.image.source`, `.url` | the GitHub repository |
+| `org.opencontainers.image.documentation` | the `docs/` folder on GitHub |
+| `org.opencontainers.image.licenses` | `Apache-2.0` |
+| `org.opencontainers.image.version` | the content of `VERSION` |
+| `org.opencontainers.image.revision` | the short commit |
+| `org.opencontainers.image.created` | the build time, UTC |
+
+```sh
+docker inspect yanachan:dev --format '{{json .Config.Labels}}'
+```
 
 ## The token
 
@@ -77,7 +110,7 @@ docker run --rm --network yana -p 127.0.0.1:19080:19080 \
   -e GHDASH_PUBLIC_URL=http://localhost:19080 \
   -e GHDASH_SESSION_KEYS -e GHDASH_ALLOWED_ORGS=<your-org> \
   -e GHDASH_REDIS_URL=redis://yana-valkey:6379/0 -e GHDASH_REDIS_PASSWORD \
-  yana-chan-4k:dev
+  yanachan:dev
 ```
 
 Build the image first with `make docker-build`. Open

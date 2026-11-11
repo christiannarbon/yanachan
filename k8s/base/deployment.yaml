@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: dashboard
-          image: yana-chan-4k:latest
+          image: yanachan:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

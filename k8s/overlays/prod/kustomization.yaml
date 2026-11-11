@@ -23,5 +23,5 @@ patches:
 # an Ingress in front of this overlay without an authenticating proxy.
 
 images:
-  - name: yana-chan-4k
+  - name: yanachan
     newTag: v1.0.0

@@ -1,6 +1,7 @@
 # Configuration reference
 
-There are no flags and no config file. Every knob is an environment variable, so
+There is one flag, `--version`, which prints the version, commit and build
+date and exits. Everything else is an environment variable, and there is no config file. Every knob is an environment variable, so
 Docker and Kubernetes need nothing the binary does not already understand.
 
 `backend/internal/config/config.go`
@@ -99,7 +100,7 @@ Not environment variables for the binary — arguments to the Makefile.
 | `API_PORT` | `19080` | `run`, `dev`, `docker-up` |
 | `WEB_PORT` | `19090` | `dev` (vite) |
 | `API_HOST` | `127.0.0.1` | `run`, `dev` |
-| `IMAGE_NAME` / `IMAGE_TAG` | `yana-chan-4k` / `dev` | `images`, `docker-*`, `k8s-load` |
+| `IMAGE_NAME` / `IMAGE_TAG` | `yanachan` / `dev` | `images`, `docker-*`, `k8s-load` |
 | `OVERLAY` | `dev` | every `k8s-*` target |
 | `PF_PORT` | `$(API_PORT)` | the Kubernetes port-forward |
 

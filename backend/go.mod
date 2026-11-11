@@ -5,7 +5,7 @@ module github.com/christiannarbon/yanachan-4k/backend
 // setup-go exports GOTOOLCHAIN=local so nothing silently fetches another one.
 // A separate `toolchain` line cannot do that job -- once it matches this
 // directive, `go mod tidy` deletes it as redundant.
-go 1.27.3
+go 1.27.4
 
 require github.com/redis/go-redis/v9 v9.23.0
 

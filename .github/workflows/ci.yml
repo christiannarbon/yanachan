@@ -115,9 +115,9 @@ jobs:
           GHDASH_REDIS_URL: redis://127.0.0.1:6379/0
         run: |
           set -euo pipefail
-          go build -o "$RUNNER_TEMP/yana-chan-4k" ./cmd/server
+          go build -o "$RUNNER_TEMP/yanachan" ./cmd/server
           GHDASH_REDIS_PASSWORD="$GHDASH_TEST_REDIS_PASSWORD" \
-            ../scripts/smoke-server-mode.sh "$RUNNER_TEMP/yana-chan-4k" valkey
+            ../scripts/smoke-server-mode.sh "$RUNNER_TEMP/yanachan" valkey
 
   frontend:
     name: Frontend
@@ -210,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           state=$(mktemp -d)
-          GHDASH_ADDR=127.0.0.1:19080 GHDASH_STATE_DIR="$state" ./bin/yana-chan-4k &
+          GHDASH_ADDR=127.0.0.1:19080 GHDASH_STATE_DIR="$state" ./bin/yanachan &
           server=$!
           trap 'kill "$server" 2>/dev/null || true' EXIT
 
@@ -255,8 +255,8 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: yana-chan-4k-linux-amd64
-          path: bin/yana-chan-4k
+          name: yanachan-linux-amd64
+          path: bin/yanachan
           retention-days: 7
           if-no-files-found: error
 
@@ -350,14 +350,14 @@ jobs:
           file: deploy/docker/Dockerfile
           push: false
           load: true
-          tags: yana-chan-4k:ci
+          tags: yanachan:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke test the image
         run: |
           set -euo pipefail
-          docker run -d --name yana-ci -p 127.0.0.1:19080:19080 yana-chan-4k:ci
+          docker run -d --name yana-ci -p 127.0.0.1:19080:19080 yanachan:ci
           trap 'docker logs yana-ci 2>&1 | tail -20; docker rm -f yana-ci >/dev/null 2>&1 || true' EXIT
 
           for _ in $(seq 1 30); do
@@ -379,7 +379,7 @@ jobs:
 
           # gh is not in the image, and the ambient-session path must stay off
           # inside a container whatever the binary's own default becomes.
-          docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' yana-chan-4k:ci \
+          docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' yanachan:ci \
             | grep -qx 'GHDASH_ALLOW_GH_CLI=false'
           echo "  gh CLI sign-in is disabled in the image"
 

@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -15,13 +16,19 @@ import (
 	"time"
 
 	"github.com/christiannarbon/yanachan-4k/backend/internal/api"
+	"github.com/christiannarbon/yanachan-4k/backend/internal/buildinfo"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/config"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/state"
 	"github.com/christiannarbon/yanachan-4k/backend/internal/webui"
 )
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Println(buildinfo.String())
+		return
+	}
 	log.SetFlags(log.Ldate | log.Ltime)
+	log.Print(buildinfo.String())
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
 		for _, line := range strings.Split(err.Error(), "\n") {

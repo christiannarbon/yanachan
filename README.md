@@ -3,7 +3,7 @@
 <p align="center">A pull request dashboard.</p>
 
 <p align="center">
-  <img alt="Go 1.24" src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white">
+  <img alt="Go 1.27" src="https://img.shields.io/badge/Go-1.27-00ADD8?style=flat-square&logo=go&logoColor=white">
   <img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-4FC08D?style=flat-square&logo=vuedotjs&logoColor=white">
   <img alt="TypeScript 5" src="https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white">
   <img alt="Vite 8" src="https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white">
@@ -143,3 +143,9 @@ name, is in [themes](docs/usage/themes.md) and
 Committee. Nothing here is affiliated with or endorsed by them; the colours and
 type choices are cited the way you would cite a source, and the artwork is not
 redistributed. Go watch it.
+
+## Licence
+
+The code is licensed under the [Apache License 2.0](LICENSE). Yana-chan 4K is
+an unofficial fan work: the licence covers this project's code, not the series
+or its characters.

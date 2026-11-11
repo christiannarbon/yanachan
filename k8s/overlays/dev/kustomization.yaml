@@ -15,5 +15,5 @@ patches:
 # with the OAuth device flow instead.
 
 images:
-  - name: yana-chan-4k
+  - name: yanachan
     newTag: dev

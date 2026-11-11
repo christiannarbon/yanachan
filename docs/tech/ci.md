@@ -137,7 +137,7 @@ toolchain itself is still moved by hand.
 
 ## Artefacts
 
-The build job uploads the Linux binary as `yana-chan-4k-linux-amd64`, kept for
+The build job uploads the Linux binary as `yanachan-linux-amd64`, kept for
 seven days. Useful for reproducing a smoke-test failure without building
 locally.
 
