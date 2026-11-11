@@ -15,5 +15,5 @@ resources:
   - service.yaml
 
 images:
-  - name: yana-chan-4k
+  - name: yanachan
     newTag: latest
