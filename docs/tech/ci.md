@@ -17,7 +17,7 @@ alone so the record of what passed stays intact.
 | **Redis/Valkey** | the `kv` conformance suite and the server-mode end-to-end tests pass against a real Valkey with a password, and the binary boots in server mode |
 | **Frontend** | the lockfile installs, `vue-tsc` passes, the unit tests pass, the bundle builds |
 | **Vulnerabilities** | `govulncheck` finds no reachable vulnerability in the standard library or go-redis |
-| **Build and smoke test** | `make build` produces a binary that serves the embedded app correctly |
+| **Build and smoke test** | `THIRD_PARTY_NOTICES.md` matches the dependencies, and `make build` produces a binary that serves the embedded app correctly |
 | **Kubernetes manifests** | both overlays render, schema-check, and keep their security posture |
 | **Container image** | the image builds for amd64 and arm64, both start, it is labelled and licensed, it runs in local and server mode, it has no fixable critical vulnerability, and it has not grown |
 | **Documentation** | every internal link in the Markdown resolves |
@@ -70,6 +70,13 @@ answers a JSON 404, `/api/board` refuses an unauthenticated caller, the
 [Host allowlist](architecture/security.md#guard-3--the-host-header-is-pinned-to-loopback)
 refuses an unknown name, and health is exempt from that allowlist.
 
+Before building, the job runs `make notices` and fails if
+`THIRD_PARTY_NOTICES.md` changes. The image ships that file next to the
+licence, so it has to list what the binary actually contains. A Dependabot
+bump to a runtime dependency (an npm package in the bundle, or a Go module)
+fails here until `make notices` is run on its branch and committed; a
+dev-only bump does not touch the file and passes.
+
 The embed assertion is not redundant with a successful compile: only `.gitkeep`
 is tracked in `backend/internal/webui/dist`, so a binary built without a staged
 bundle compiles fine and then answers `frontend bundle is missing`.
@@ -94,15 +101,18 @@ and the only one that sees what a release ships. In order:
 
 - **Both platforms build** from one `buildx` call, as a release would build
   them. Nothing is loaded or pushed; the later steps load one platform at a time
-  from the same cache. The build args are fixed (`VERSION=ci`, the commit, a
-  1970 build date) so the label layer, and with it the cache, stays the same
-  between runs.
+  from the same cache. The build args are `VERSION=ci`, the commit and a fixed
+  1970 date. The commit changes every run, so `go build` and the label layer
+  rebuild anyway; the fixed date keeps the later builds in the job identical
+  to this one, so they come from its cache.
 - **The amd64 container behaves:** health answers, the frontend is embedded, it
   runs as uid 10001 (a rebuild that drops the `USER` line passes every other
   check in the file), `GHDASH_ALLOW_GH_CLI` is still `false`, and `--version`
   says `yanachan ci`.
 - **Labels and licence:** all nine `org.opencontainers.image.*` labels are set,
-  and `LICENSE` and `THIRD_PARTY_NOTICES.md` are in
+  and `version`, `revision` and `created` hold the stamped values (`ci`, the
+  commit, the 1970 date) rather than the `dev`/`none`/`unknown` a build without
+  build args falls back to. `LICENSE` and `THIRD_PARTY_NOTICES.md` are in
   `/usr/share/licenses/yanachan/`. GHCR links a package to its repository
   through the `source` label, and the licence has to travel with every copy.
 - **Server mode from the same image.** The image defaults to local mode, but a
@@ -113,25 +123,36 @@ and the only one that sees what a release ships. In order:
   and `/api/auth/status` says `"authMode":"server"`; none of the three logs
   contains the session key, the Redis password or the client secret; with
   Valkey stopped, `/api/ready` is `503` while `/api/health` stays `200` and the
-  process keeps running. The session key and password are generated per run
-  and masked; the client ID and secret are placeholders, because nothing here
-  talks to GitHub.
+  process keeps running; and the logs are searched for secrets again after the
+  outage, because connection errors are where a password would leak. The
+  session key and password are generated per run and masked; the client ID and
+  secret are placeholders, because nothing here talks to GitHub.
 - **Size budget: 35 MiB.** Measured on 2026-11-11 at **22 MiB** (Alpine and its
   certificates about 13 MiB, the binary about 9 MiB), so the budget is roughly
   1.5×. It is measured with `du` inside the container rather than
   `docker image inspect .Size`, because that number depends on the image store:
   with the containerd store it can report compressed sizes. A sudden jump
   usually means a build tool or `node_modules` leaked into the runtime stage.
+- **arm64 starts.** The runners are amd64, so the arm64 image runs under QEMU.
+  That is slow for building but fine for starting a Go binary: the build itself
+  cross-compiles, and QEMU is only there for this step, which checks the
+  image's architecture, `--version` and health.
 - **Vulnerability scan:** Trivy, over the Alpine packages and the Go binary.
   It fails only on a **CRITICAL** finding **with a fix available**. A HIGH, or
   anything without a fix, is printed but does not fail: nobody can act on a
   finding with no fix, and a gate that is red for reasons nobody can act on
   gets switched off. `govulncheck` remains the sharper gate for Go code,
-  because it knows which vulnerable functions are actually reached.
-- **arm64 starts.** The runners are amd64, so the arm64 image runs under QEMU.
-  That is slow for building but fine for starting a Go binary: the build itself
-  cross-compiles, and QEMU is only there for this step, which checks the
-  image's architecture, `--version` and health.
+  because it knows which vulnerable functions are actually reached. It runs
+  last: a newly published CVE can fail it with no code change, and that must
+  not stop the arm64 check from running. Only the amd64 image is scanned; the
+  arm64 one has the same Alpine packages and Go modules.
+
+Every build of the image logs one BuildKit warning,
+`SecretsUsedInArgOrEnv … (ENV "GHDASH_AUTH_MODE")`. The rule matches on the
+word `AUTH`; the variable holds `local`, not a secret. It is left on rather
+than skipped with `# check=skip=`, because skipping the rule would also hide a
+real secret added to the Dockerfile later. A second warning of that kind is
+worth reading.
 
 **Documentation.** `make docs-check`, the same command you can run locally.
 

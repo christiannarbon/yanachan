@@ -59,7 +59,7 @@ image carries the standard OCI labels:
 | `org.opencontainers.image.licenses` | `Apache-2.0` |
 | `org.opencontainers.image.version` | the content of `VERSION` |
 | `org.opencontainers.image.revision` | the short commit |
-| `org.opencontainers.image.created` | the build time, UTC |
+| `org.opencontainers.image.created` | the time of that commit, UTC |
 
 ```sh
 docker inspect yanachan:dev --format '{{json .Config.Labels}}'

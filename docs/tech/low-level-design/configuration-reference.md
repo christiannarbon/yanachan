@@ -1,8 +1,9 @@
 # Configuration reference
 
-There is one flag, `--version`, which prints the version, commit and build
-date and exits. Everything else is an environment variable, and there is no config file. Every knob is an environment variable, so
-Docker and Kubernetes need nothing the binary does not already understand.
+There is one flag, `--version`, which prints the version, the commit and the
+build date, and exits. Everything else is an environment variable and there
+is no config file, so Docker and Kubernetes need nothing the binary does not
+already understand.
 
 `backend/internal/config/config.go`
 
