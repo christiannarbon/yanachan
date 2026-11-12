@@ -201,6 +201,15 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # The image ships this file, so a dependency bump that skips
+      # `make notices` would ship notices that no longer match the binary.
+      - name: Third-party notices are current
+        run: |
+          set -euo pipefail
+          make notices
+          git diff --exit-code THIRD_PARTY_NOTICES.md \
+            || { echo "::error::THIRD_PARTY_NOTICES.md is out of date; run make notices and commit it"; exit 1; }
+
       # The same target a developer runs: build the bundle, stage it into
       # internal/webui/dist, compile the binary with it embedded.
       - name: make build
@@ -355,7 +364,9 @@ jobs:
           file: deploy/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: false
-          # A fixed date keeps the label layer, and so the cache, stable.
+          # The commit changes every run, so go build and the labels rebuild
+          # anyway; the fixed date only keeps the later builds in this job
+          # identical to this one, so they come from its cache.
           build-args: |
             VERSION=ci
             COMMIT=${{ github.sha }}
@@ -417,7 +428,12 @@ jobs:
             value=$(docker inspect -f "{{ index .Config.Labels \"org.opencontainers.image.$label\" }}" yanachan:ci)
             test -n "$value" || { echo "::error::label org.opencontainers.image.$label is missing"; exit 1; }
           done
-          echo "  OCI labels present"
+          # Non-empty is not enough: without build-args these are dev, none, unknown.
+          label() { docker inspect -f "{{ index .Config.Labels \"org.opencontainers.image.$1\" }}" yanachan:ci; }
+          test "$(label version)" = ci || { echo "::error::version label is $(label version), not ci"; exit 1; }
+          test "$(label revision)" = "$GITHUB_SHA" || { echo "::error::revision label is $(label revision), not $GITHUB_SHA"; exit 1; }
+          test "$(label created)" = 1970-01-01T00:00:00Z || { echo "::error::created label is $(label created)"; exit 1; }
+          echo "  OCI labels present and stamped"
           docker run --rm --entrypoint ls yanachan:ci \
             /usr/share/licenses/yanachan/LICENSE /usr/share/licenses/yanachan/THIRD_PARTY_NOTICES.md >/dev/null
           echo "  licence and notices shipped in the image"
@@ -470,10 +486,13 @@ jobs:
           curl -sf -H 'Host: localhost:19080' http://127.0.0.1:19082/api/auth/status >/tmp/status.json
           grep -q '"authMode":"server"' /tmp/status.json
           grep -q '"loginUrl":"/api/auth/login"' /tmp/status.json
-          if cat /tmp/half.log /tmp/noredis.log <(docker logs yana-srv 2>&1) \
-              | grep -q -F -e "$key" -e "$rpw" -e ci-placeholder-client-secret; then
-            echo "::error::a secret reached the log"; exit 1
-          fi
+          no_secret_in_logs() {
+            if cat /tmp/half.log /tmp/noredis.log <(docker logs yana-srv 2>&1) \
+                | grep -q -F -e "$key" -e "$rpw" -e ci-placeholder-client-secret; then
+              echo "::error::a secret reached the log"; exit 1
+            fi
+          }
+          no_secret_in_logs
           echo "  server mode starts, reports itself, and logs no secret"
 
           docker stop valkey >/dev/null
@@ -482,6 +501,9 @@ jobs:
           curl -sf http://127.0.0.1:19082/api/health >/dev/null
           docker inspect -f '{{.State.Running}}' yana-srv | grep -q true
           echo "  /api/ready is 503 without Valkey; /api/health still 200; still running"
+          # Connection errors are where a password would leak, so search again.
+          no_secret_in_logs
+          echo "  the outage logged no secret"
 
       # Measured inside the container: .Size depends on the image store
       # (compressed or not), du does not. About 22 MiB on 2026-11-11.
@@ -491,17 +513,6 @@ jobs:
           kib=$(docker run --rm --user 0 --entrypoint du yanachan:ci -sxk / | awk '{print $1}')
           echo "image size: $((kib / 1024)) MiB"
           test "$kib" -lt $((35 * 1024)) || { echo "::error::image grew past 35 MiB ($((kib / 1024)) MiB)"; exit 1; }
-
-      # CRITICAL and fixable fails; HIGH, and anything without a fix, does not.
-      # See docs/tech/ci.md for why.
-      - name: Scan the image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: yanachan:ci
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          format: table
 
       - name: Build arm64 for the smoke test
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -531,6 +542,18 @@ jobs:
           done
           curl -sf http://127.0.0.1:19081/api/health | grep -q '"status":"ok"'
           echo "  arm64 image answers"
+
+      # CRITICAL and fixable fails; HIGH, and anything without a fix, does not.
+      # See docs/tech/ci.md for why. Last, because a newly published CVE can
+      # fail it with no code change, and that must not hide the other checks.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: yanachan:ci
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
 
   docs:
     name: Documentation
