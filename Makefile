@@ -31,7 +31,9 @@ RUN_DIR   := $(ROOT)/.run
 
 VERSION    := $(shell cat $(ROOT)/VERSION 2>/dev/null || echo dev)
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# The commit's time, not now: the same commit then builds the same binary, and
+# docker reuses the go build layer instead of redoing it on every make images.
+BUILD_DATE := $(shell TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 BUILDINFO  := github.com/christiannarbon/yanachan-4k/backend/internal/buildinfo
 LDFLAGS    := -s -w -X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).Date=$(BUILD_DATE)
 
