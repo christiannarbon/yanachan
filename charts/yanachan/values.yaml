@@ -1,0 +1,151 @@
+# -- Override the chart name used in resource names.
+nameOverride: ""
+# -- Override the full resource name. With the release named yanachan this is already yanachan.
+fullnameOverride: ""
+
+global:
+  # -- Registry host that replaces image.registry, for mirrors and air-gapped installs.
+  imageRegistry: ""
+  # -- Pull secrets added to the pod, for example for a private mirror.
+  imagePullSecrets: []
+
+image:
+  # -- Registry host. Empty means the repository is used as written.
+  registry: ghcr.io
+  # -- Image repository.
+  repository: christiannarbon/yanachan
+  # -- Image tag. Empty means the chart's appVersion.
+  tag: ""
+  # -- Image digest (sha256:...). When set it wins over the tag.
+  digest: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  # -- Create a ServiceAccount for the pod. It never mounts a token either way.
+  create: true
+  # -- Name of the ServiceAccount. Empty means the full name.
+  name: ""
+  # -- Annotations for the ServiceAccount.
+  annotations: {}
+
+auth:
+  # -- server (every user signs in with GitHub; sessions in Redis/Valkey; stateless) or local (one stored token, no login, port-forward only, PVC).
+  mode: server
+  # -- URL users open, scheme and host only, no path (GHDASH_PUBLIC_URL). Required in server mode. The OAuth App's callback is this plus /api/auth/callback.
+  publicURL: ""
+  # -- OAuth App (the default) or GitHub App client ID (GITHUB_CLIENT_ID). Not a secret. Required in server mode; in local mode empty means the Secret's clientId key, if any.
+  clientId: ""
+  # -- Secret holding the credentials. Empty means the full name. The chart never creates it.
+  existingSecret: ""
+  secretKeys:
+    # -- Key holding the GitHub client secret (server mode, required).
+    clientSecret: github-client-secret
+    # -- Key holding GHDASH_SESSION_KEYS, comma-separated base64 32-byte keys (server mode, required).
+    sessionKeys: session-keys
+    # -- Key holding the Redis/Valkey password (server mode, optional; read with optional: true).
+    redisPassword: redis-password
+    # -- Key holding a GitHub token (local mode only, optional).
+    token: gh-token
+    # -- Key holding the OAuth client ID (local mode only, optional, for the device flow).
+    clientId: github-client-id
+  # -- Organisations whose members may sign in (GHDASH_ALLOWED_ORGS).
+  allowedOrgs: []
+  # -- Individual GitHub logins, or id:<n> user IDs, that may sign in (GHDASH_ALLOWED_USERS).
+  allowedUsers: []
+  # -- Let any GitHub user sign in (GHDASH_ALLOW_ANY_USER). Server mode needs this, allowedOrgs or allowedUsers.
+  allowAnyUser: false
+  # -- Idle session lifetime, a Go duration such as 168h (GHDASH_SESSION_IDLE). Empty means the app default.
+  sessionIdle: ""
+  # -- Absolute session lifetime, a Go duration such as 720h (GHDASH_SESSION_MAX). Empty means the app default.
+  sessionMax: ""
+  # -- Token rotation policy for both app kinds, a Go duration between 15m and sessionMax (GHDASH_TOKEN_MAX_AGE). Empty means the app default, 8h.
+  tokenMaxAge: ""
+  # -- Override for sessions without a refresh token: OAuth Apps, and GitHub Apps with token expiry off (GHDASH_OAUTH_APP_TOKEN_MAX_AGE). Each rotation is a brief redirect for the user. Empty means tokenMaxAge.
+  oauthAppTokenMaxAge: ""
+  # -- Override for sessions with a refresh token: GitHub Apps with expiring tokens (GHDASH_GITHUB_APP_TOKEN_MAX_AGE). Refreshes are invisible, so a short value costs users nothing. Empty means tokenMaxAge.
+  githubAppTokenMaxAge: ""
+  redis:
+    # -- Redis/Valkey URL, redis://host:6379/0 or rediss://host:6378 for TLS (GHDASH_REDIS_URL). Required in server mode. Never put a password in it; use the redis-password Secret key.
+    url: ""
+    # -- Key prefix (GHDASH_REDIS_PREFIX), so several installs can share one instance. Empty means the app default, yana:.
+    prefix: ""
+    # -- ConfigMap holding the CA bundle for rediss:// with a private CA (Memorystore in-transit encryption). Mounted read-only; sets GHDASH_REDIS_CA_FILE.
+    caConfigMap: ""
+    # -- Secret holding the CA bundle instead of a ConfigMap. Set at most one of caConfigMap and caSecret.
+    caSecret: ""
+    # -- Key inside the ConfigMap or Secret that holds the PEM bundle.
+    caKey: ca.crt
+
+# -- Number of pods. Server mode only (stateless); local mode must leave it at 1.
+replicaCount: 1
+
+pdb:
+  # -- Render a PodDisruptionBudget (maxUnavailable 1). Server mode with replicaCount > 1 only.
+  enabled: false
+
+service:
+  # -- Service type. Local mode has no login, so keep it ClusterIP and reach it through a port-forward.
+  type: ClusterIP
+  # -- Service port.
+  port: 19080
+  # -- Service annotations.
+  annotations: {}
+
+persistence:
+  # -- Local mode only: size of the state volume holding settings.json and session.json. Server mode mounts no volume.
+  size: 1Gi
+  # -- StorageClass for the state volume. Empty means the cluster default.
+  storageClass: ""
+  # -- Use an existing PVC instead of creating one.
+  existingClaim: ""
+  # -- Annotations for the PVC.
+  annotations: {}
+
+# -- Starting value for the per-query pull request cap (GHDASH_LIMIT).
+defaultLimit: 25
+
+# -- Pod security context. Set runAsUser and fsGroup to null on OpenShift.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# -- Container resources.
+resources:
+  requests:
+    cpu: 20m
+    memory: 48Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# -- Readiness: /api/ready answers 503 in server mode while Redis is unreachable, so the pod leaves the Service without restarting.
+readinessProbe:
+  httpGet:
+    path: /api/ready
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+
+# -- Liveness: /api/health never touches Redis.
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 30
+
+# -- Extra pod annotations.
+podAnnotations: {}
+# -- Extra pod labels.
+podLabels: {}
