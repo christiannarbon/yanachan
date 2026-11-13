@@ -6,8 +6,14 @@ The OAuth App's callback URL must be exactly:
 
   {{ .Values.auth.publicURL | trimSuffix "/" }}/api/auth/callback
 
-Sessions are stored in Redis/Valkey at {{ .Values.auth.redis.url }}. The pod stays
-NotReady (/api/ready) until it can reach it.
+{{ if include "yana.valkey.enabled" . -}}
+Sessions and settings are stored in the bundled Valkey ({{ include "yana.valkey.fullname" . }},
+one instance{{ if .Values.valkey.persistence.enabled }}, data on a PVC{{ if eq .Values.valkey.persistence.whenDeleted "Retain" }} that is kept on uninstall{{ end }}{{ else }}, NO persistence: a Valkey restart signs everyone out{{ end }}).
+Its password is the {{ .Values.auth.secretKeys.redisPassword }} key of the Secret below.
+{{- else }}
+Sessions are stored in the Redis/Valkey at {{ .Values.auth.redis.url }}.
+{{- end }}
+The app pod stays NotReady (/api/ready) until it can reach it.
 
 The pod reads keys from the Secret {{ include "yana.secretName" . }}. If it is not
 there yet, the pod waits in CreateContainerConfigError until it is:
@@ -15,7 +21,7 @@ there yet, the pod waits in CreateContainerConfigError until it is:
   kubectl -n {{ .Release.Namespace }} create secret generic {{ include "yana.secretName" . }} \
     --from-literal={{ .Values.auth.secretKeys.clientSecret }}=<client-secret> \
     --from-literal={{ .Values.auth.secretKeys.sessionKeys }}="$(head -c32 /dev/urandom | base64)" \
-    --from-literal={{ .Values.auth.secretKeys.redisPassword }}=<redis-password>
+    --from-literal={{ .Values.auth.secretKeys.redisPassword }}={{ if include "yana.valkey.enabled" . }}"$(head -c24 /dev/urandom | base64)"{{ else }}<redis-password>{{ end }}
 
 Who may sign in:{{ with .Values.auth.allowedOrgs }} members of {{ join ", " . }}.{{ end }}{{ with .Values.auth.allowedUsers }} users {{ join ", " . }}.{{ end }}{{ if .Values.auth.allowAnyUser }} ANY GitHub user (auth.allowAnyUser=true).{{ end }}
 
