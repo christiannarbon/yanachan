@@ -36,6 +36,8 @@ knowledge is assumed; if you are here to change the code, start at
   everyone in with, and choose between the two.
 - [Redis or Valkey](redis.md) — where server mode keeps sessions and settings,
   and how to harden it.
+- [The bundled Valkey](bundled-valkey.md) — the Valkey the Helm chart runs for
+  server mode: access, password, persistence and how to turn it off.
 - [Support policy](support-policy.md) — supported versions, platforms and
   upgrade paths.
 
