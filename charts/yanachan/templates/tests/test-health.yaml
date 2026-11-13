@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "yana.fullname" . }}-test-health
+  labels:
+    {{- include "yana.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: health
+      image: {{ include "yana.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      # /api/health is exempt from the Host allowlist, so the Service name works.
+      command: ["wget", "-q", "-O-", "http://{{ include "yana.fullname" . }}:{{ .Values.service.port }}/api/health"]
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 32Mi

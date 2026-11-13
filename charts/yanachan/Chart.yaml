@@ -1,0 +1,19 @@
+apiVersion: v2
+name: yanachan
+description: Yana-chan 4K, a pull request dashboard for GitHub
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/christiannarbon/yanachan
+sources:
+  - https://github.com/christiannarbon/yanachan
+maintainers:
+  - name: christiannarbon
+    url: https://github.com/christiannarbon
+keywords:
+  - github
+  - pull-requests
+  - dashboard
+annotations:
+  artifacthub.io/license: Apache-2.0
