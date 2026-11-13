@@ -1,0 +1,7 @@
+.DS_Store
+*.swp
+*.tmp
+# Anchored: a bare "tests/" would also drop templates/tests/ and the helm test hook.
+/tests/
+ci/
+README.md.gotmpl
