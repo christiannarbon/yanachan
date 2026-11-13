@@ -1,0 +1,14 @@
+{{- /* A PDB on one replica would block node drains. */}}
+{{- if and (include "yana.serverMode" .) .Values.pdb.enabled (gt (int .Values.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "yana.fullname" . }}
+  labels:
+    {{- include "yana.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "yana.selectorLabels" . | nindent 6 }}
+{{- end }}
