@@ -1,0 +1,127 @@
+{{- if include "yana.valkey.enabled" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "yana.valkey.fullname" . }}
+  labels:
+    {{- include "yana.valkey.labels" . | nindent 4 }}
+spec:
+  # One instance; for replication or HA use a managed Redis/Valkey instead.
+  replicas: 1
+  serviceName: {{ include "yana.valkey.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "yana.valkey.selectorLabels" . | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: {{ .Values.valkey.persistence.whenDeleted }}
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        {{- include "yana.valkey.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/valkey-configmap.yaml") . | sha256sum }}
+        {{- with .Values.valkey.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- toYaml .Values.valkey.podSecurityContext | nindent 8 }}
+      containers:
+        - name: valkey
+          image: {{ include "yana.valkey.image" . }}
+          imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              case "$VALKEY_PASSWORD" in
+                ""|*'"'*|*'\'*|*"
+              "*) echo "the redis-password Secret key must be set and must not contain a quote, backslash or newline" >&2; exit 1 ;;
+              esac
+              umask 077
+              cp /etc/valkey/valkey.conf /run/valkey/valkey.conf
+              # The password goes from the env into a 0600 file in a memory-backed
+              # emptyDir, never into argv.
+              printf 'requirepass "%s"\n' "$VALKEY_PASSWORD" >> /run/valkey/valkey.conf
+              unset VALKEY_PASSWORD
+              exec valkey-server /run/valkey/valkey.conf
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yana.secretName" . }}
+                  key: {{ .Values.auth.secretKeys.redisPassword }}
+            # valkey-cli reads the password from here, so probes never pass -a.
+            - name: VALKEYCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yana.secretName" . }}
+                  key: {{ .Values.auth.secretKeys.redisPassword }}
+          ports:
+            - name: valkey
+              containerPort: 6379
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "valkey-cli -h 127.0.0.1 ping | grep -q PONG"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "valkey-cli -h 127.0.0.1 ping | grep -q PONG"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          securityContext:
+            {{- toYaml .Values.valkey.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.valkey.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/valkey
+              readOnly: true
+            - name: run
+              mountPath: /run/valkey
+            - name: data
+              mountPath: /data
+      {{- with .Values.valkey.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.valkey.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.valkey.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "yana.valkey.fullname" . }}
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- if not .Values.valkey.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.valkey.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "yana.valkey.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.valkey.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.valkey.persistence.size }}
+  {{- end }}
+{{- end }}

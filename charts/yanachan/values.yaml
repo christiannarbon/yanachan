@@ -43,7 +43,7 @@ auth:
     clientSecret: github-client-secret
     # -- Key holding GHDASH_SESSION_KEYS, comma-separated base64 32-byte keys (server mode, required).
     sessionKeys: session-keys
-    # -- Key holding the Redis/Valkey password (server mode, optional; read with optional: true).
+    # -- Key holding the Redis/Valkey password. Required with the bundled Valkey (it sets Valkey's password); optional for an external Redis.
     redisPassword: redis-password
     # -- Key holding a GitHub token (local mode only, optional).
     token: gh-token
@@ -66,7 +66,7 @@ auth:
   # -- Override for sessions with a refresh token: GitHub Apps with expiring tokens (GHDASH_GITHUB_APP_TOKEN_MAX_AGE). Refreshes are invisible, so a short value costs users nothing. Empty means tokenMaxAge.
   githubAppTokenMaxAge: ""
   redis:
-    # -- Redis/Valkey URL, redis://host:6379/0 or rediss://host:6378 for TLS (GHDASH_REDIS_URL). Required in server mode. Never put a password in it; use the redis-password Secret key.
+    # -- External Redis/Valkey URL (GHDASH_REDIS_URL), only with valkey.enabled=false. redis://host:6379/0 or rediss://host:6378 for TLS. Never put a password in it; use the redis-password Secret key.
     url: ""
     # -- Key prefix (GHDASH_REDIS_PREFIX), so several installs can share one instance. Empty means the app default, yana:.
     prefix: ""
@@ -149,3 +149,59 @@ livenessProbe:
 podAnnotations: {}
 # -- Extra pod labels.
 podLabels: {}
+
+valkey:
+  # -- Run a Valkey for sessions and settings inside the release (server mode only). Set false and set auth.redis.url to use a managed Redis/Valkey instead.
+  enabled: true
+  image:
+    # -- Registry host. global.imageRegistry replaces it, as for the app image.
+    registry: docker.io
+    # -- Image repository.
+    repository: valkey/valkey
+    # -- Image tag.
+    tag: "9.1.3-alpine"
+    # -- Multi-arch index digest. When set it wins over the tag.
+    digest: "sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b"
+    # -- Image pull policy.
+    pullPolicy: IfNotPresent
+  persistence:
+    # -- Keep Valkey's data (AOF) on a PVC, so a Valkey restart keeps sessions and settings. Off: an emptyDir, and every Valkey restart signs everyone out and resets their settings.
+    enabled: true
+    # -- PVC size.
+    size: 1Gi
+    # -- StorageClass. Empty means the cluster default.
+    storageClass: ""
+    # -- What happens to the PVC when the release is uninstalled (Retain or Delete).
+    whenDeleted: Retain
+  # -- maxmemory for Valkey. Keep it below resources.limits.memory. Eviction is off (noeviction): a full Valkey refuses writes rather than silently signing users out.
+  maxmemory: 192mb
+  # -- Container resources.
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  # -- Pod security context. The IDs are the image's valkey user and group. Set runAsUser, runAsGroup and fsGroup to null on OpenShift.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Container security context.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  # -- Node selector for the Valkey pod.
+  nodeSelector: {}
+  # -- Tolerations for the Valkey pod.
+  tolerations: []
+  # -- Affinity for the Valkey pod.
+  affinity: {}
+  # -- Extra pod annotations.
+  podAnnotations: {}

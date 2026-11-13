@@ -63,3 +63,42 @@ app.kubernetes.io/part-of: yanachan
 {{- printf "%s:%s" $repo (default .Chart.AppVersion .Values.image.tag) }}
 {{- end }}
 {{- end }}
+
+{{- define "yana.valkey.fullname" -}}
+{{- printf "%s-valkey" (include "yana.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/* Must differ from the app's selector, or the app's Service would route to Valkey. */}}
+{{- define "yana.valkey.selectorLabels" -}}
+app.kubernetes.io/name: {{ printf "%s-valkey" (include "yana.name" .) | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "yana.valkey.labels" -}}
+helm.sh/chart: {{ include "yana.chart" . }}
+{{ include "yana.valkey.selectorLabels" . }}
+app.kubernetes.io/component: valkey
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: yanachan
+{{- end }}
+
+{{/* The bundled Valkey renders only in server mode. */}}
+{{- define "yana.valkey.enabled" -}}
+{{- if and (include "yana.serverMode" .) .Values.valkey.enabled }}true{{ end }}
+{{- end }}
+
+{{- define "yana.valkey.image" -}}
+{{- $v := .Values.valkey.image }}
+{{- $registry := default $v.registry .Values.global.imageRegistry }}
+{{- $repo := $v.repository }}
+{{- if $registry }}{{ $repo = printf "%s/%s" $registry $repo }}{{ end }}
+{{- if $v.digest }}{{ printf "%s@%s" $repo $v.digest }}{{ else }}{{ printf "%s:%s" $repo $v.tag }}{{ end }}
+{{- end }}
+
+{{- define "yana.redisURL" -}}
+{{- if include "yana.valkey.enabled" . }}
+{{- printf "redis://%s:6379/0" (include "yana.valkey.fullname" .) }}
+{{- else }}
+{{- .Values.auth.redis.url }}
+{{- end }}
+{{- end }}

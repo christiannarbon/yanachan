@@ -1,0 +1,10 @@
+# The external-Redis path: valkey.enabled=false, pointed at ci/valkey.yaml.
+auth:
+  mode: server
+  publicURL: http://localhost:19080
+  clientId: ci-placeholder-client-id
+  allowAnyUser: true
+  redis:
+    url: redis://valkey:6379/0
+valkey:
+  enabled: false

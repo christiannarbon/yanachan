@@ -1,0 +1,27 @@
+{{- if include "yana.valkey.enabled" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yana.valkey.fullname" . }}
+  labels:
+    {{- include "yana.valkey.labels" . | nindent 4 }}
+data:
+  valkey.conf: |
+    # The password is appended at start-up from the Secret; it is never in this
+    # ConfigMap or in the container's args.
+    bind * -::*
+    port 6379
+    # Stays on: it only blocks remote clients while the default user has no password,
+    # so a start without the password line refuses connections instead of serving them.
+    protected-mode yes
+    dir /data
+    maxmemory {{ .Values.valkey.maxmemory }}
+    maxmemory-policy noeviction
+    save ""
+    {{- if .Values.valkey.persistence.enabled }}
+    appendonly yes
+    appendfsync everysec
+    {{- else }}
+    appendonly no
+    {{- end }}
+{{- end }}

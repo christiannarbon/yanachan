@@ -3,5 +3,3 @@ auth:
   publicURL: http://localhost:19080
   clientId: ci-placeholder-client-id
   allowAnyUser: true
-  redis:
-    url: redis://valkey:6379/0

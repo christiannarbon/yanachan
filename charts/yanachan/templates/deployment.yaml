@@ -112,7 +112,7 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             - name: GHDASH_REDIS_URL
-              value: {{ .Values.auth.redis.url | quote }}
+              value: {{ include "yana.redisURL" . | quote }}
             {{- with .Values.auth.redis.prefix }}
             - name: GHDASH_REDIS_PREFIX
               value: {{ . | quote }}
@@ -122,7 +122,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "yana.secretName" . }}
                   key: {{ .Values.auth.secretKeys.redisPassword }}
-                  optional: true
+                  # Required with the bundled Valkey: a missing key fails loudly instead of NOAUTH on every call.
+                  optional: {{ not (include "yana.valkey.enabled" .) }}
             {{- if or .Values.auth.redis.caConfigMap .Values.auth.redis.caSecret }}
             - name: GHDASH_REDIS_CA_FILE
               value: /etc/yana/redis-ca/{{ .Values.auth.redis.caKey }}

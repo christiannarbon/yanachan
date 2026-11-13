@@ -1,0 +1,17 @@
+{{- if include "yana.valkey.enabled" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yana.valkey.fullname" . }}
+  labels:
+    {{- include "yana.valkey.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "yana.valkey.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+      protocol: TCP
+{{- end }}
