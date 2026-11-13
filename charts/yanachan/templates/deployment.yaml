@@ -1,0 +1,189 @@
+{{- include "yana.validateAuth" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "yana.fullname" . }}
+  labels:
+    {{- include "yana.labels" . | nindent 4 }}
+spec:
+  {{- if include "yana.serverMode" . }}
+  # Stateless: sessions and settings live in Redis/Valkey.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    # Written out (the Kubernetes defaults) so Helm owns it and drops it when
+    # an upgrade switches to local mode; a leftover block is rejected next to Recreate.
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  {{- else }}
+  # One replica on a ReadWriteOnce volume; the old pod must let go first.
+  replicas: 1
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "yana.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "yana.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "yana.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: dashboard
+          image: {{ include "yana.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 19080
+          env:
+            - name: GHDASH_ADDR
+              value: ":19080"
+            {{- if not (include "yana.serverMode" .) }}
+            - name: GHDASH_STATE_DIR
+              value: "/data"
+            {{- end }}
+            - name: GHDASH_ALLOW_GH_CLI
+              value: "false"
+            - name: GHDASH_LIMIT
+              value: {{ .Values.defaultLimit | quote }}
+            - name: GHDASH_AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            {{- if include "yana.serverMode" . }}
+            # Server mode refuses to start with GH_TOKEN set, so it is never rendered here.
+            - name: GITHUB_CLIENT_ID
+              value: {{ .Values.auth.clientId | quote }}
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yana.secretName" . }}
+                  key: {{ .Values.auth.secretKeys.clientSecret }}
+            - name: GHDASH_SESSION_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yana.secretName" . }}
+                  key: {{ .Values.auth.secretKeys.sessionKeys }}
+            - name: GHDASH_PUBLIC_URL
+              value: {{ .Values.auth.publicURL | trimSuffix "/" | quote }}
+            {{- with .Values.auth.allowedOrgs }}
+            - name: GHDASH_ALLOWED_ORGS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.auth.allowedUsers }}
+            - name: GHDASH_ALLOWED_USERS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: GHDASH_ALLOW_ANY_USER
+              value: {{ .Values.auth.allowAnyUser | quote }}
+            {{- with .Values.auth.sessionIdle }}
+            - name: GHDASH_SESSION_IDLE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.auth.sessionMax }}
+            - name: GHDASH_SESSION_MAX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.auth.tokenMaxAge }}
+            - name: GHDASH_TOKEN_MAX_AGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.auth.oauthAppTokenMaxAge }}
+            - name: GHDASH_OAUTH_APP_TOKEN_MAX_AGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.auth.githubAppTokenMaxAge }}
+            - name: GHDASH_GITHUB_APP_TOKEN_MAX_AGE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GHDASH_REDIS_URL
+              value: {{ .Values.auth.redis.url | quote }}
+            {{- with .Values.auth.redis.prefix }}
+            - name: GHDASH_REDIS_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GHDASH_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yana.secretName" . }}
+                  key: {{ .Values.auth.secretKeys.redisPassword }}
+                  optional: true
+            {{- if or .Values.auth.redis.caConfigMap .Values.auth.redis.caSecret }}
+            - name: GHDASH_REDIS_CA_FILE
+              value: /etc/yana/redis-ca/{{ .Values.auth.redis.caKey }}
+            {{- end }}
+            {{- else }}
+            # Local mode: one stored token, no login.
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yana.secretName" . }}
+                  key: {{ .Values.auth.secretKeys.token }}
+                  optional: true
+            - name: GITHUB_CLIENT_ID
+              {{- if .Values.auth.clientId }}
+              value: {{ .Values.auth.clientId | quote }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "yana.secretName" . }}
+                  key: {{ .Values.auth.secretKeys.clientId }}
+                  optional: true
+              {{- end }}
+            {{- end }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            {{- if include "yana.serverMode" . }}
+            {{- if or .Values.auth.redis.caConfigMap .Values.auth.redis.caSecret }}
+            - name: redis-ca
+              mountPath: /etc/yana/redis-ca
+              readOnly: true
+            {{- end }}
+            {{- else }}
+            - name: state
+              mountPath: /data
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- if include "yana.serverMode" . }}
+        {{- with .Values.auth.redis.caConfigMap }}
+        - name: redis-ca
+          configMap:
+            name: {{ . }}
+        {{- end }}
+        {{- with .Values.auth.redis.caSecret }}
+        - name: redis-ca
+          secret:
+            secretName: {{ . }}
+        {{- end }}
+        {{- else }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "yana.claimName" . }}
+        {{- end }}
+        # The read-only root filesystem needs a writable /tmp; it never holds state.
+        - name: tmp
+          emptyDir: {}
