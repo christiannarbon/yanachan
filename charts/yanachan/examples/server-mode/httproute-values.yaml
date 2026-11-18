@@ -1,0 +1,26 @@
+# Server mode behind a Gateway API HTTPRoute. See README.md here for the steps.
+auth:
+  mode: server
+  # The route host, this URL and the OAuth App's callback must all name the same host.
+  publicURL: https://yana.example.com
+  clientId: <your-oauth-app-client-id>
+  allowedOrgs: [<your-org>]
+  # existingSecret defaults to the release's full name (yanachan); it holds
+  # github-client-secret, session-keys and redis-password (see README.md here).
+# Sessions go to the chart's bundled Valkey (the default). For a managed
+# Redis/Valkey instead, set valkey.enabled=false and auth.redis.url.
+replicaCount: 2
+pdb:
+  enabled: true
+ingress:
+  enabled: false
+# TLS terminates on the Gateway's HTTPS listener, which the platform team owns:
+# the certificate for yana.example.com is configured there, not in this chart.
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: <your-gateway>
+      namespace: <gateway-namespace>
+  hostnames: [yana.example.com]
+networkPolicy:
+  enabled: true

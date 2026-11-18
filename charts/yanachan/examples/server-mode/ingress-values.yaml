@@ -1,0 +1,26 @@
+# Server mode behind an Ingress with TLS. See README.md here for the steps.
+auth:
+  mode: server
+  # The route host, this URL and the OAuth App's callback must all name the same host.
+  publicURL: https://yana.example.com
+  clientId: <your-oauth-app-client-id>
+  allowedOrgs: [<your-org>]
+  # existingSecret defaults to the release's full name (yanachan); it holds
+  # github-client-secret, session-keys and redis-password (see README.md here).
+# Sessions go to the chart's bundled Valkey (the default). For a managed
+# Redis/Valkey instead, set valkey.enabled=false and auth.redis.url.
+replicaCount: 2
+pdb:
+  enabled: true
+ingress:
+  enabled: true
+  className: <your-ingress-class>
+  annotations: {}
+  #  cert-manager.io/cluster-issuer: <your-issuer>   # if cert-manager issues the certificate
+  hosts:
+    - host: yana.example.com
+  tls:
+    - hosts: [yana.example.com]
+      secretName: yanachan-tls
+networkPolicy:
+  enabled: true
