@@ -1,0 +1,39 @@
+# Values for the upstream oauth2-proxy chart (https://oauth2-proxy.github.io/manifests,
+# chart oauth2-proxy), written against chart 10.7.4 / oauth2-proxy 7.15.6.
+config:
+  # Holds client-id, client-secret and cookie-secret (see README.md here).
+  existingSecret: oauth2-proxy
+  # Anyone in <your-org> may sign in; the org check below does the restricting.
+  emailDomains: ["*"]
+  upstreams:
+    - http://yanachan.yana-chan-4k.svc.cluster.local:19080
+
+extraArgs:
+  provider: github
+  github-org: <your-org>
+  # Forward the Host users open (dash.example.internal, in yana-values.yaml's allowedHosts).
+  pass-host-header: true
+  reverse-proxy: true
+  redirect-url: https://dash.example.internal/oauth2/callback
+  cookie-secure: true
+
+ingress:
+  enabled: true
+  className: <your-ingress-class>
+  path: /
+  pathType: Prefix
+  hosts:
+    - dash.example.internal
+  tls:
+    - secretName: oauth2-proxy-tls
+      hosts:
+        - dash.example.internal
+
+# With Gateway API instead of an Ingress, turn ingress off and use:
+# gatewayApi:
+#   enabled: true
+#   gatewayRef:
+#     name: <your-gateway>
+#     namespace: <gateway-namespace>
+#   hostnames:
+#     - dash.example.internal
