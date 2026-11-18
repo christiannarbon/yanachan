@@ -4,9 +4,14 @@ metadata:
   name: {{ include "yana.fullname" . }}
   labels:
     {{- include "yana.labels" . | nindent 4 }}
-  {{- with .Values.service.annotations }}
+  {{- if or .Values.service.annotations (ne .Values.service.type "ClusterIP") }}
   annotations:
+    {{- if ne .Values.service.type "ClusterIP" }}
+    yana-chan-4k/authenticated-by: {{ include "yana.authenticatedBy" . | quote }}
+    {{- end }}
+    {{- with .Values.service.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
   {{- end }}
 spec:
   type: {{ .Values.service.type }}

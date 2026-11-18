@@ -1,0 +1,6 @@
+# Local mode behind oauth2-proxy. The Service stays ClusterIP and nothing else
+# is exposed: the only route in is oauth2-proxy's own Ingress or HTTPRoute.
+auth:
+  mode: local
+# oauth2-proxy passes the Host users open, so the app must answer to it.
+allowedHosts: [dash.example.internal]

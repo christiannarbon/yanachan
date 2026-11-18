@@ -1,4 +1,5 @@
 {{- include "yana.validateAuth" . }}
+{{- include "yana.validate" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -63,6 +64,10 @@ spec:
               value: "false"
             - name: GHDASH_LIMIT
               value: {{ .Values.defaultLimit | quote }}
+            {{- with include "yana.allowedHosts" . }}
+            - name: GHDASH_ALLOWED_HOSTS
+              value: {{ . | quote }}
+            {{- end }}
             - name: GHDASH_AUTH_MODE
               value: {{ .Values.auth.mode | quote }}
             {{- if include "yana.serverMode" . }}

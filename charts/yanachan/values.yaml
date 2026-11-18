@@ -205,3 +205,56 @@ valkey:
   affinity: {}
   # -- Extra pod annotations.
   podAnnotations: {}
+
+exposure:
+  # -- Local mode only: what authenticates users in front of the dashboard, for example oauth2-proxy. Required in local mode when ingress, httpRoute or a non-ClusterIP service exposes the pod. Ignored in server mode, which authenticates by itself.
+  authenticatedBy: ""
+
+# -- Extra Host names the app answers to (GHDASH_ALLOWED_HOSTS). Ingress and HTTPRoute hosts, and the auth.publicURL host, are added automatically.
+allowedHosts: []
+
+ingress:
+  # -- Render an Ingress. In local mode it needs exposure.authenticatedBy.
+  enabled: false
+  # -- IngressClass name.
+  className: ""
+  # -- Ingress annotations, for example your controller's external-auth settings.
+  annotations: {}
+  # -- Hosts and paths. Paths default to / (Prefix).
+  hosts: []
+  #  - host: dash.example.internal
+  #    paths:
+  #      - path: /
+  #        pathType: Prefix
+  # -- TLS blocks.
+  tls: []
+
+httpRoute:
+  # -- Render a Gateway API HTTPRoute. Needs the Gateway API CRDs, and in local mode exposure.authenticatedBy.
+  enabled: false
+  # -- Gateways the route attaches to.
+  parentRefs: []
+  # -- Hostnames for the route.
+  hostnames: []
+  # -- Route annotations.
+  annotations: {}
+
+networkPolicy:
+  # -- Render a NetworkPolicy for the app pod. The bundled Valkey has its own, rendered whenever it is enabled.
+  enabled: false
+  # -- Peers allowed to reach the dashboard port, besides pods in the release namespace. Any NetworkPolicyPeer, passed through verbatim: podSelector, namespaceSelector or ipBlock (for example a cloud load balancer's health-check ranges).
+  ingressFrom: []
+  egress:
+    # -- Allow DNS to any destination on port 53.
+    dns: true
+    # -- Allow HTTPS (443) to any destination, for api.github.com.
+    https: true
+    redis:
+      # -- Server mode: allow egress to Redis/Valkey. Ignored in local mode.
+      enabled: true
+      # -- External Redis port. 6379 by default; Memorystore with in-transit encryption uses 6378. The bundled Valkey always uses 6379.
+      port: 6379
+      # -- External Redis only (valkey.enabled=false): peers it lives at, any NetworkPolicyPeer passed through verbatim (ipBlock for a managed instance's private IP, podSelector for an in-cluster one). Empty means any destination on that port. Ignored with the bundled Valkey, which is allowed automatically.
+      to: []
+    # -- Extra egress rules, for example to an HTTP proxy.
+    extra: []

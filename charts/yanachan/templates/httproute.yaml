@@ -1,0 +1,27 @@
+{{- if .Values.httpRoute.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1") }}
+{{- fail "httpRoute.enabled needs the Gateway API CRDs (gateway.networking.k8s.io/v1) in the cluster" }}
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "yana.fullname" . }}
+  labels:
+    {{- include "yana.labels" . | nindent 4 }}
+  annotations:
+    yana-chan-4k/authenticated-by: {{ include "yana.authenticatedBy" . | quote }}
+    {{- with .Values.httpRoute.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
+  {{- with .Values.httpRoute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ include "yana.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}

@@ -25,14 +25,27 @@ there yet, the pod waits in CreateContainerConfigError until it is:
 
 Who may sign in:{{ with .Values.auth.allowedOrgs }} members of {{ join ", " . }}.{{ end }}{{ with .Values.auth.allowedUsers }} users {{ join ", " . }}.{{ end }}{{ if .Values.auth.allowAnyUser }} ANY GitHub user (auth.allowAnyUser=true).{{ end }}
 
+{{ if or .Values.ingress.enabled .Values.httpRoute.enabled -}}
+The route host, auth.publicURL and the OAuth App's callback must all name the
+same host, or nobody can sign in. The app answers to: {{ include "yana.allowedHosts" . }}
+{{- if not (hasPrefix "https://" .Values.auth.publicURL) }}
+auth.publicURL is not https: the session cookie is sent without Secure.
+{{- end }}
+{{- else -}}
 Until an Ingress or HTTPRoute exists, try it through a port-forward; this only
 works when auth.publicURL is http://localhost:19080:
 
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "yana.fullname" . }} 19080:{{ .Values.service.port }}
+{{- end }}
 {{- else }}
 
 Local mode has no login of its own: anything that can reach it is signed in as
-whoever stored the GitHub token. Reach it only through a port-forward:
+whoever stored the GitHub token.
+{{- if and .Values.exposure.authenticatedBy (or .Values.ingress.enabled .Values.httpRoute.enabled (ne .Values.service.type "ClusterIP")) }}
+It is exposed on the claim that {{ .Values.exposure.authenticatedBy }} authenticates every
+request in front of it. Its hosts: {{ include "yana.allowedHosts" . | default "none" }}
+{{- end }}
+Reach it yourself through a port-forward:
 
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "yana.fullname" . }} 19080:{{ .Values.service.port }}
   open http://localhost:19080
