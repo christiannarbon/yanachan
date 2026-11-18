@@ -292,6 +292,17 @@ Server mode:
 - `GHDASH_ALLOW_GH_CLI` is forced off, and an environment token is a startup
   error.
 
+Helm chart:
+
+- In server mode the chart exposes the pod on request (Ingress, HTTPRoute or a
+  non-ClusterIP Service) and annotates the exposing object
+  `yana-chan-4k/authenticated-by: github-sign-in`. In local mode it refuses
+  unless `exposure.authenticatedBy` names the authenticating proxy in front, and
+  records that claim as the same annotation. In both modes it adds the exposed
+  hostnames and the `auth.publicURL` host to `GHDASH_ALLOWED_HOSTS` itself.
+  Worked examples: `charts/yanachan/examples/server-mode/` and
+  `charts/yanachan/examples/oauth2-proxy/`.
+
 ## Scope of the GitHub token
 
 **Local mode** and **server mode with an OAuth App** request `repo read:org`.
