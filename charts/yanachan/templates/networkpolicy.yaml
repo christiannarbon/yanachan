@@ -1,0 +1,58 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "yana.fullname" . }}
+  labels:
+    {{- include "yana.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "yana.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- with .Values.networkPolicy.ingressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+  egress:
+    {{- if .Values.networkPolicy.egress.dns }}
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.networkPolicy.egress.https }}
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- if and (include "yana.serverMode" .) .Values.networkPolicy.egress.redis.enabled }}
+    # Server mode keeps sessions and settings in Redis/Valkey.
+    {{- if .Values.valkey.enabled }}
+    - ports:
+        - port: 6379
+          protocol: TCP
+      to:
+        - podSelector:
+            matchLabels:
+              {{- include "yana.valkey.selectorLabels" . | nindent 14 }}
+    {{- else }}
+    - ports:
+        - port: {{ .Values.networkPolicy.egress.redis.port }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.egress.redis.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
