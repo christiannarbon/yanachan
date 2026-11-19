@@ -13,6 +13,14 @@ builds the image and loads it into the node, applies the secret, applies the dev
 overlay, waits for the rollout, then opens a background port-forward and polls
 `/api/health` until it answers. It prints the URL when it is ready.
 
+This page is the local-mode developer loop over the manifests in `k8s/`. To run
+the dashboard for a team, use the Helm chart in `charts/yanachan/`: server mode
+by default, with worked examples for
+[server mode behind an Ingress or HTTPRoute](../../charts/yanachan/examples/server-mode/README.md)
+and for
+[local mode behind oauth2-proxy](../../charts/yanachan/examples/oauth2-proxy/README.md).
+Its Redis side is described in [The bundled Valkey](bundled-valkey.md).
+
 ## Targets
 
 | Target | What it does |
@@ -74,9 +82,10 @@ or a one-off `kubectl create secret` — before applying.
 
 The service is deliberately ClusterIP. The pod holds a GitHub token and has no
 login of its own, so reach it through the tunnel rather than exposing it.
-This page describes the local-mode developer deployment; the Helm chart, when it
-lands, runs [server mode](authentication.md#server-mode), which is built to be
-exposed.
+This page describes the local-mode developer deployment. The Helm chart runs
+[server mode](authentication.md#server-mode) by default, which is built to be
+exposed, and refuses to expose local mode unless `exposure.authenticatedBy`
+names the authenticating proxy in front.
 
 If you put it behind an authenticating proxy anyway, the hostname that proxy
 uses has to be in `GHDASH_ALLOWED_HOSTS` or the app will refuse the request. See
