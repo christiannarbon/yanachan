@@ -9,6 +9,21 @@ Prefer [server mode](../server-mode/README.md) unless your organisation already
 standardises on an SSO proxy and wants one shared token. Every user here sees
 that token's view of GitHub, and acts as it.
 
+## One shared session
+
+Local mode has a single session, and everyone who gets through the proxy shares
+it and can change it:
+
+- anyone can sign it out, for everyone, until someone approves the token again;
+- if the app has an OAuth client ID (`auth.clientId` or the `github-client-id`
+  Secret key), anyone can sign in through the device flow with their own GitHub
+  account. From then on every user browses, and acts, as that person.
+
+So leave the client ID unset in this pattern, as below: the device flow is then
+unavailable and the only token is the one you put in the Secret. Treat everyone
+the proxy admits as trusted with that token. If that is not acceptable, use
+server mode.
+
 ## Why this shape
 
 The dashboard never gets a route of its own. Its Service stays `ClusterIP` and
@@ -65,4 +80,8 @@ values. Commands run from the repository root.
    ```
 
 6. Point DNS for `dash.example.internal` at the ingress address, open
-   `https://dash.example.internal` and sign in with GitHub.
+   `https://dash.example.internal` and sign in with GitHub at oauth2-proxy.
+
+7. The dashboard then says it found a token in the environment and asks to use
+   it. Approve it once; the session is stored on the dashboard's volume and
+   every later visitor uses it. Approve again after anyone signs out.

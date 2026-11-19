@@ -10,10 +10,13 @@ The OAuth App's callback URL must be exactly:
 Sessions and settings are stored in the bundled Valkey ({{ include "yana.valkey.fullname" . }},
 one instance{{ if .Values.valkey.persistence.enabled }}, data on a PVC{{ if eq .Values.valkey.persistence.whenDeleted "Retain" }} that is kept on uninstall{{ end }}{{ else }}, NO persistence: a Valkey restart signs everyone out{{ end }}).
 Its password is the {{ .Values.auth.secretKeys.redisPassword }} key of the Secret below.
+The app pod waits for it to answer before it starts, and turns NotReady
+(/api/ready) whenever it loses it later.
 {{- else }}
 Sessions are stored in the Redis/Valkey at {{ .Values.auth.redis.url }}.
+The app exits at start if it cannot reach it (check the URL and the password),
+and turns NotReady (/api/ready) whenever it loses it later.
 {{- end }}
-The app pod stays NotReady (/api/ready) until it can reach it.
 
 The pod reads keys from the Secret {{ include "yana.secretName" . }}. If it is not
 there yet, the pod waits in CreateContainerConfigError until it is:
@@ -43,7 +46,7 @@ Local mode has no login of its own: anything that can reach it is signed in as
 whoever stored the GitHub token.
 {{- if and .Values.exposure.authenticatedBy (or .Values.ingress.enabled .Values.httpRoute.enabled (ne .Values.service.type "ClusterIP")) }}
 It is exposed on the claim that {{ .Values.exposure.authenticatedBy }} authenticates every
-request in front of it. Its hosts: {{ include "yana.allowedHosts" . | default "none" }}
+request in front of it. Its hosts: {{ include "yana.allowedHosts" . }}
 {{- end }}
 Reach it yourself through a port-forward:
 
@@ -59,4 +62,10 @@ Sign in with the OAuth device flow (needs auth.clientId or the {{ .Values.auth.s
 
 The state volume {{ include "yana.claimName" . }} is kept on helm uninstall. Delete it yourself
 to forget the stored session and settings.
+{{- end }}
+{{- if and .Values.networkPolicy.enabled (ne .Values.service.type "ClusterIP") }}
+
+The NetworkPolicy admits only pods in {{ .Release.Namespace }} and networkPolicy.ingressFrom.
+Traffic reaching the {{ .Values.service.type }} Service from outside the cluster is dropped
+until ingressFrom admits its source, for example with an ipBlock.
 {{- end }}

@@ -275,7 +275,8 @@ Local mode:
 - The container publishes on `127.0.0.1` and runs as uid 10001 with a read-only
   root filesystem and all capabilities dropped.
 - The Kubernetes service is ClusterIP with no Ingress, deliberately. Reach it
-  through `make k8s-tunnel`.
+  through a port-forward (`make k8s-tunnel` in the development loop). The Helm
+  chart refuses to expose it unless an authenticating proxy is named (below).
 - If you do put an authenticating proxy in front, its hostname must be in
   `GHDASH_ALLOWED_HOSTS` — and *authenticating* is not optional. Guard 3 stops
   DNS rebinding; it does not stop a colleague who can reach the URL.
