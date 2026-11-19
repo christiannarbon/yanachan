@@ -21,8 +21,8 @@
 
 {{/* Selectors are immutable: nothing that changes per version belongs here. */}}
 {{- define "yana.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "yana.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/name: {{ include "yana.name" . | quote }}
+app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- end }}
 
 {{- define "yana.labels" -}}
@@ -71,7 +71,7 @@ app.kubernetes.io/part-of: yanachan
 {{/* Must differ from the app's selector, or the app's Service would route to Valkey. */}}
 {{- define "yana.valkey.selectorLabels" -}}
 app.kubernetes.io/name: {{ printf "%s-valkey" (include "yana.name" .) | trunc 63 | trimSuffix "-" }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- end }}
 
 {{- define "yana.valkey.labels" -}}
