@@ -46,6 +46,29 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if include "yana.valkey.enabled" . }}
+      # The app exits if Redis does not answer at start, which is what catches a
+      # wrong URL or password. On a fresh install the bundled Valkey starts at the
+      # same time, so wait for it to answer at all first. NOAUTH counts as an answer:
+      # the password stays out of this container.
+      initContainers:
+        - name: wait-for-valkey
+          image: {{ include "yana.valkey.image" . }}
+          imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - until valkey-cli -h {{ include "yana.valkey.fullname" . }} -p 6379 ping 2>&1 | grep -qE 'PONG|NOAUTH'; do echo "waiting for {{ include "yana.valkey.fullname" . }}"; sleep 2; done
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+      {{- end }}
       containers:
         - name: dashboard
           image: {{ include "yana.image" . }}
