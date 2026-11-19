@@ -2,8 +2,15 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: {{ include "yana.fullname" . }}-test-health
+  # Not the app's selector labels: the app's NetworkPolicy would select this pod
+  # and drop its request to the app.
   labels:
-    {{- include "yana.labels" . | nindent 4 }}
+    helm.sh/chart: {{ include "yana.chart" . }}
+    app.kubernetes.io/name: {{ printf "%s-test" (include "yana.name" .) | trunc 63 | trimSuffix "-" }}
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/component: test
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: yanachan
   annotations:
     helm.sh/hook: test
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
