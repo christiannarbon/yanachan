@@ -17,6 +17,10 @@ in Redis and Valkey in general, see [Redis or Valkey](redis.md).
 - It runs with the same hardening as the app: non-root (the image's `valkey`
   user, 999:1000), read-only root filesystem, no capabilities, `RuntimeDefault`
   seccomp, no service account token. It passes Pod Security `restricted`.
+- The app's pods wait for it in an init container (`wait-for-valkey`, the
+  Valkey image running `valkey-cli ping` without the password) before the app
+  starts, so a fresh install does not crash the app while Valkey comes up. The
+  app still exits at start on a wrong password.
 - It is **not highly available**. While it restarts, the app's pods turn NotReady
   (`/api/ready`) and leave the Service until it is back. For replication or a
   managed service, use an external Redis (below).
@@ -91,7 +95,10 @@ out and resets everyone's settings.** Use it only for a try-out.
 
 `valkey.maxmemory` (default `192mb`, below the 256Mi memory limit) caps Valkey's
 memory with eviction off. A full Valkey refuses writes, so sign-ins fail loudly,
-rather than silently evicting someone's session.
+rather than silently evicting someone's session. When you raise it, keep
+`valkey.resources.limits.memory` at about 1.5 times `maxmemory`: rewriting the
+append-only file forks the process, and pages copied during the rewrite count
+against the limit.
 
 ## Uninstalling
 
