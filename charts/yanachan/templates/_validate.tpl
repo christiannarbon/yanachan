@@ -9,6 +9,17 @@
 {{- if and .Values.httpRoute.enabled (not .Values.httpRoute.parentRefs) -}}
 {{- fail "httpRoute.enabled needs at least one entry in httpRoute.parentRefs" -}}
 {{- end -}}
+{{- range splitList "," (include "yana.allowedHosts" .) -}}
+{{- if hasPrefix "*" . -}}
+{{- fail (printf "%q is a wildcard host. The app matches Host headers exactly, so it would refuse every request: list each name users open in allowedHosts and in the ingress or route hosts" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if and $exposed (not (include "yana.serverMode" .)) (not (include "yana.allowedHosts" .)) -}}
+{{- fail "local mode is exposed but answers to no host name, so it would refuse every request with 403: set allowedHosts to the name users open through the authenticating proxy" -}}
+{{- end -}}
+{{- if and (include "yana.valkey.enabled" .) (not (has .Values.valkey.persistence.whenDeleted (list "Retain" "Delete"))) -}}
+{{- fail (printf "valkey.persistence.whenDeleted must be Retain or Delete, not %q" .Values.valkey.persistence.whenDeleted) -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "yana.authenticatedBy" -}}
