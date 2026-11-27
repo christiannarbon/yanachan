@@ -1,0 +1,95 @@
+# A complete server-mode install for a team: every user signs in with GitHub,
+# two replicas behind a PodDisruptionBudget, the bundled Valkey on a 2Gi volume,
+# NetworkPolicies on, and the image pinned by digest. Use it on its own:
+#
+#   helm install yanachan charts/yanachan -n yanachan --create-namespace \
+#     -f charts/yanachan/examples/production.yaml
+#
+# It exposes nothing outside the cluster. Add a route from
+# examples/server-mode/ (ingress-values.yaml or httproute-values.yaml) for that.
+#
+# Replace every <placeholder>, your-org and yana.example.com. Create the Secret
+# first; the chart never creates it:
+#
+#   kubectl -n yanachan create secret generic yanachan-github \
+#     --from-literal=github-client-secret=<client-secret> \
+#     --from-literal=session-keys="$(openssl rand -base64 32)" \
+#     --from-literal=redis-password="$(openssl rand -hex 24)"
+#
+# Rotating the session key (session-keys holds comma-separated keys; the first
+# seals, every one opens):
+#   1. Prepend a new key: session-keys=<new>,<old>.
+#   2. kubectl -n yanachan rollout restart deploy/yanachan. Every pod can still
+#      open <old>, so pods that already have <new> and pods that do not yet
+#      read each other's sessions during the rollout.
+#   3. Wait auth.sessionMax (the app default is 720h), then remove <old> and
+#      restart again.
+# A leaked key is removed at once instead, which signs everyone out.
+# The app reads the Secret only at start, so every change to it needs a
+# rollout restart (or a reloader controller you run yourself).
+
+auth:
+  mode: server
+  publicURL: https://yana.example.com
+  # An OAuth App's client ID. A GitHub App also works; see docs/usage/github-app.md.
+  clientId: <your-oauth-app-client-id>
+  existingSecret: yanachan-github
+  allowedOrgs: [your-org]
+  tokenMaxAge: 8h
+  # OAuth App tokens never expire on their own; this caps how long one is used
+  # before the user is sent through GitHub again (a brief redirect).
+  # oauthAppTokenMaxAge: 8h
+  # GitHub App tokens are refreshed invisibly, so this one can be short.
+  # githubAppTokenMaxAge: 1h
+
+replicaCount: 2
+
+pdb:
+  enabled: true
+
+image:
+  # Pin the image by its multi-arch index digest. The tag is then ignored.
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+networkPolicy:
+  enabled: true
+
+valkey:
+  enabled: true
+  persistence:
+    size: 2Gi
+    storageClass: <your-storage-class>
+  # Keep it below resources.limits.memory.
+  maxmemory: 384mb
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# A managed Redis/Valkey instead of the bundled one (TLS on 6378, as with
+# Memorystore). Its password goes in the Secret's redis-password key, never in
+# the URL.
+#
+# valkey:
+#   enabled: false
+# auth:
+#   redis:
+#     url: rediss://<your-redis-host>:6378/0
+# networkPolicy:
+#   egress:
+#     redis:
+#       port: 6378
+#       to:
+#         - ipBlock:
+#             cidr: <your-redis-ip>/32
