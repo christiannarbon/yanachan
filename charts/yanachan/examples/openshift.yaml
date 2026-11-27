@@ -1,0 +1,15 @@
+# For OpenShift. Its restricted-v2 SecurityContextConstraint assigns the user
+# and group IDs from the namespace's range and refuses a pod that asks for
+# fixed ones. Setting the IDs to null removes them from the pod spec; the pods
+# keep runAsNonRoot and the RuntimeDefault seccomp profile. Combine it with
+# your own auth values.
+
+podSecurityContext:
+  runAsUser: null
+  fsGroup: null
+
+valkey:
+  podSecurityContext:
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null

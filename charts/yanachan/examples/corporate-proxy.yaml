@@ -1,0 +1,37 @@
+# For clusters that reach GitHub only through an HTTP proxy, possibly one that
+# inspects TLS with a corporate CA. Combine it with your own auth values.
+#
+# Every call to GitHub (GraphQL, sign-in, token refresh and revocation) honours
+# HTTPS_PROXY, HTTP_PROXY and NO_PROXY. Redis/Valkey is not HTTP and never goes
+# through the proxy.
+#
+# Two ways to trust a private CA:
+#   - trustedCA.configMapName: added to the system roots for every TLS
+#     connection the app makes, GitHub and a rediss:// Redis alike. Use it for
+#     a TLS-inspecting proxy. Every key of the ConfigMap becomes a PEM file:
+#       kubectl -n yanachan create configmap corp-ca --from-file=corp-root.pem
+#   - auth.redis.caConfigMap / caSecret: trusted for Redis only, for example a
+#     managed Redis with its own per-instance CA. It does not affect GitHub.
+#
+# With the NetworkPolicy on, HTTPS to anywhere is replaced by one rule to the
+# proxy. Replace the proxy address and port with yours.
+
+proxy:
+  httpsProxy: http://proxy.corp.internal:3128
+  httpProxy: http://proxy.corp.internal:3128
+  noProxy: localhost,127.0.0.1,.svc,.cluster.local
+
+trustedCA:
+  configMapName: corp-ca
+
+networkPolicy:
+  enabled: true
+  egress:
+    https: false
+    extra:
+      - to:
+          - ipBlock:
+              cidr: 10.0.0.10/32
+        ports:
+          - protocol: TCP
+            port: 3128

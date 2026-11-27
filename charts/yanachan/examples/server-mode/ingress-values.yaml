@@ -4,7 +4,7 @@ auth:
   # The route host, this URL and the OAuth App's callback must all name the same host.
   publicURL: https://yana.example.com
   clientId: <your-oauth-app-client-id>
-  allowedOrgs: [<your-org>]
+  allowedOrgs: [your-org]
   # existingSecret defaults to the release's full name (yanachan); it holds
   # github-client-secret, session-keys and redis-password (see README.md here).
 # Sessions go to the chart's bundled Valkey (the default). For a managed

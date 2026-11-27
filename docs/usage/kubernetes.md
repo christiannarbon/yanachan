@@ -21,6 +21,19 @@ and for
 [local mode behind oauth2-proxy](../../charts/yanachan/examples/oauth2-proxy/README.md).
 Its Redis side is described in [The bundled Valkey](bundled-valkey.md).
 
+For platform teams, `charts/yanachan/examples/` also holds values files, each
+explained in its header:
+[a complete production install](../../charts/yanachan/examples/production.yaml),
+[an internal registry mirror](../../charts/yanachan/examples/air-gapped.yaml),
+[an egress proxy and a corporate CA](../../charts/yanachan/examples/corporate-proxy.yaml),
+[OpenShift](../../charts/yanachan/examples/openshift.yaml),
+[credentials from External Secrets](../../charts/yanachan/examples/external-secrets.yaml)
+and [GitHub Enterprise Server](../../charts/yanachan/examples/ghes.yaml) (untested).
+The chart validates its values against `values.schema.json`, so a misspelt key
+or a value of the wrong shape fails the install instead of being ignored. It
+never creates the Secret; the app reads it only at start, so run
+`kubectl rollout restart` after changing it.
+
 ## Targets
 
 | Target | What it does |

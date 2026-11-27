@@ -44,6 +44,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- if include "yana.valkey.enabled" . }}
@@ -93,6 +96,28 @@ spec:
             {{- end }}
             - name: GHDASH_AUTH_MODE
               value: {{ .Values.auth.mode | quote }}
+            - name: GHDASH_GRAPHQL_ENDPOINT
+              value: {{ .Values.github.graphqlEndpoint | quote }}
+            - name: GHDASH_GITHUB_WEB
+              value: {{ .Values.github.webUrl | quote }}
+            - name: GHDASH_REST_ENDPOINT
+              value: {{ .Values.github.restEndpoint | quote }}
+            {{- with .Values.proxy.httpsProxy }}
+            - name: HTTPS_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.proxy.httpProxy }}
+            - name: HTTP_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.proxy.noProxy }}
+            - name: NO_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.trustedCA.configMapName }}
+            - name: SSL_CERT_DIR
+              value: "/etc/ssl/certs:/etc/yana-chan-4k/ca"
+            {{- end }}
             {{- if include "yana.serverMode" . }}
             # Server mode refuses to start with GH_TOKEN set, so it is never rendered here.
             - name: GITHUB_CLIENT_ID
@@ -175,6 +200,9 @@ spec:
                   optional: true
               {{- end }}
             {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           livenessProbe:
@@ -196,6 +224,11 @@ spec:
             {{- end }}
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.trustedCA.configMapName }}
+            - name: trusted-ca
+              mountPath: /etc/yana-chan-4k/ca
+              readOnly: true
+            {{- end }}
       volumes:
         {{- if include "yana.serverMode" . }}
         {{- with .Values.auth.redis.caConfigMap }}
@@ -216,3 +249,20 @@ spec:
         # The read-only root filesystem needs a writable /tmp; it never holds state.
         - name: tmp
           emptyDir: {}
+        {{- with .Values.trustedCA.configMapName }}
+        - name: trusted-ca
+          configMap:
+            name: {{ . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
