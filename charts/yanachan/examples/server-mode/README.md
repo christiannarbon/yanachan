@@ -6,7 +6,7 @@ through an Ingress (`ingress-values.yaml`) or a Gateway API HTTPRoute
 (`httproute-values.yaml`) and annotates it
 `yana-chan-4k/authenticated-by: github-sign-in`.
 
-Replace every `<placeholder>` and `yana.example.com` with your own values.
+Replace every `<placeholder>`, `your-org` and `yana.example.com` with your own values.
 Commands run from the repository root.
 
 ## One rule
