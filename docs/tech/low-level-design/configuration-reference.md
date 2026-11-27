@@ -25,8 +25,10 @@ already understand.
 | `GHDASH_GITHUB_TOKEN` | *(empty)* | a token from the environment — checked first |
 | `GH_TOKEN` | *(empty)* | …then this. What the Docker and k8s targets forward |
 | `GITHUB_TOKEN` | *(empty)* | …then this |
-| `GHDASH_GRAPHQL_ENDPOINT` | `https://api.github.com/graphql` | override for testing against a fake |
-| `GHDASH_GITHUB_WEB` | `https://github.com` | device-flow endpoints are derived from this |
+| `GHDASH_GRAPHQL_ENDPOINT` | `https://api.github.com/graphql` | override for testing against a fake, or for GitHub Enterprise Server (untested). The chart's `github.graphqlEndpoint` |
+| `GHDASH_GITHUB_WEB` | `https://github.com` | device-flow and web-flow endpoints are derived from this. The chart's `github.webUrl` |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | *(empty)* | honoured by every call to GitHub; Redis never goes through them. The chart's `proxy.*` |
+| `SSL_CERT_DIR` | *(system)* | extra directories of PEM CA certificates, colon-separated. The chart sets it to `/etc/ssl/certs:/etc/yana-chan-4k/ca` when `trustedCA.configMapName` is set |
 
 A token in the environment is still only *offered*. The user approves it on the
 first screen before it is used.
@@ -52,7 +54,7 @@ first screen before it is used.
 | `GHDASH_TOKEN_MAX_AGE` | `8h` | how long one GitHub token may serve a session before rotation. Between `15m` and `GHDASH_SESSION_MAX` |
 | `GHDASH_OAUTH_APP_TOKEN_MAX_AGE` | inherits `GHDASH_TOKEN_MAX_AGE` | the same, for sessions without a refresh token (OAuth Apps, and GitHub Apps with token expiry off). Same bounds |
 | `GHDASH_GITHUB_APP_TOKEN_MAX_AGE` | inherits `GHDASH_TOKEN_MAX_AGE` | the same, for sessions with a refresh token (GitHub Apps with expiring tokens). Same bounds |
-| `GHDASH_REST_ENDPOINT` | `https://api.github.com` | used for token revocation. GHES: `https://HOST/api/v3` |
+| `GHDASH_REST_ENDPOINT` | `https://api.github.com` | used for token revocation. GHES: `https://HOST/api/v3` (untested). The chart's `github.restEndpoint` |
 
 Server mode keeps nothing on disk, so `GHDASH_STATE_DIR` is ignored and
 `GHDASH_ALLOW_GH_CLI` is forced to `false`. `GH_TOKEN`, `GITHUB_TOKEN` and
