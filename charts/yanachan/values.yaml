@@ -77,6 +77,14 @@ auth:
     # -- Key inside the ConfigMap or Secret that holds the PEM bundle.
     caKey: ca.crt
 
+github:
+  # -- GraphQL endpoint. Change it for GitHub Enterprise Server (untested).
+  graphqlEndpoint: https://api.github.com/graphql
+  # -- Web URL users sign in at (web flow and device flow). Change it for GitHub Enterprise Server (untested).
+  webUrl: https://github.com
+  # -- REST endpoint, used only to revoke a token on sign-out. GitHub Enterprise Server: https://HOST/api/v3 (untested).
+  restEndpoint: https://api.github.com
+
 # -- Number of pods. Server mode only (stateless); local mode must leave it at 1.
 replicaCount: 1
 
@@ -258,3 +266,26 @@ networkPolicy:
       to: []
     # -- Extra egress rules, for example to an HTTP proxy.
     extra: []
+
+proxy:
+  # -- HTTPS_PROXY for calls to GitHub.
+  httpsProxy: ""
+  # -- HTTP_PROXY.
+  httpProxy: ""
+  # -- NO_PROXY.
+  noProxy: ""
+
+trustedCA:
+  # -- ConfigMap of extra PEM CA certificates to trust, for TLS-inspecting proxies. Every key becomes a file.
+  configMapName: ""
+
+# -- Extra environment variables for the container.
+extraEnv: []
+# -- Node selector.
+nodeSelector: {}
+# -- Tolerations.
+tolerations: []
+# -- Affinity.
+affinity: {}
+# -- PriorityClass name.
+priorityClassName: ""
