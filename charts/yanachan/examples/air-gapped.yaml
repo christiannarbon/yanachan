@@ -1,0 +1,27 @@
+# For clusters that pull only from an internal registry. Combine it with your
+# own auth values (or examples/production.yaml).
+#
+# global.imageRegistry replaces the registry of both images the chart runs, so
+# mirror both, keeping their repository paths:
+#
+#   ghcr.io/christiannarbon/yanachan  -> registry.corp.internal/christiannarbon/yanachan
+#   docker.io/valkey/valkey           -> registry.corp.internal/valkey/valkey
+#
+# Copy the whole multi-arch index (for example `crane copy` or
+# `skopeo copy --all`), so the digests below stay the same in the mirror.
+# The bundled Valkey image is also used by the app's wait-for-valkey init
+# container, so both pods pull from the mirror.
+
+global:
+  imageRegistry: registry.corp.internal
+  imagePullSecrets:
+    - name: corp-registry
+
+image:
+  # The digest of the release you mirrored.
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+valkey:
+  image:
+    # valkey/valkey:9.1.3-alpine, the chart's default.
+    digest: sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
