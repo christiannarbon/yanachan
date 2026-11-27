@@ -1,0 +1,12 @@
+# For GitHub Enterprise Server. Untested: these endpoints have never been run
+# against a real GHES instance. Combine it with your own auth values.
+#
+# Create the OAuth App (or GitHub App) on the GHES instance itself, with the
+# callback auth.publicURL + /api/auth/callback, and put its client ID in
+# auth.clientId. Users sign in at webUrl; sign-out revokes the token through
+# restEndpoint.
+
+github:
+  graphqlEndpoint: https://ghe.example.com/api/graphql
+  webUrl: https://ghe.example.com
+  restEndpoint: https://ghe.example.com/api/v3
